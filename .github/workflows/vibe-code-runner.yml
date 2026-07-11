@@ -1,0 +1,185 @@
+name: Vibe Code Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Job ID from the Worker queue'
+        required: true
+        type: string
+      repo:
+        description: 'Target repo (owner/repo)'
+        required: true
+        type: string
+      branch:
+        description: 'Target branch'
+        required: false
+        type: string
+        default: 'main'
+      prompt:
+        description: 'Coding task prompt'
+        required: true
+        type: string
+      callback_url:
+        description: 'Worker API URL to notify on completion'
+        required: true
+        type: string
+      callback_secret:
+        description: 'Secret for Worker API auth'
+        required: true
+        type: string
+
+jobs:
+  vibe-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Clone runner repo (for agent script)
+        uses: actions/checkout@v4
+
+      - name: Clone target repo
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Cloning target repo: ${{ inputs.repo }} (branch: ${{ inputs.branch }})"
+          git clone \
+            --branch "${{ inputs.branch }}" \
+            --single-branch \
+            "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" \
+            /tmp/target-repo
+          echo "Target repo cloned to /tmp/target-repo"
+          ls -la /tmp/target-repo
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install agent dependencies
+        run: |
+          cd ${{ github.workspace }}/agent
+          npm install
+          echo "Agent dependencies installed"
+
+      - name: Run Vibe Code Agent
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          echo "========================================="
+          echo "Running Vibe Code Agent"
+          echo "Job ID: ${{ inputs.job_id }}"
+          echo "Prompt: ${{ inputs.prompt }}"
+          echo "========================================="
+
+          node ${{ github.workspace }}/agent/vibe-agent.js \
+            --prompt "$(cat <<'PROMPT'
+          ${{ inputs.prompt }}
+          PROMPT
+          )" \
+            --repo-dir /tmp/target-repo \
+            --max-iters 25
+
+          echo "Agent run complete. Checking results..."
+
+          if [ -f /tmp/target-repo/.vibe-agent-result.json ]; then
+            cat /tmp/target-repo/.vibe-agent-result.json
+          fi
+
+      - name: Check for changes
+        id: changes
+        run: |
+          cd /tmp/target-repo
+          git status --porcelain
+          CHANGES=$(git status --porcelain | wc -l)
+          echo "changes_count=${CHANGES}" >> $GITHUB_OUTPUT
+          if [ "${CHANGES}" -gt 0 ]; then
+            echo "Found ${CHANGES} changed files"
+          else
+            echo "No changes detected"
+          fi
+
+      - name: Commit and push changes
+        if: steps.changes.outputs.changes_count > 0
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          cd /tmp/target-repo
+
+          # Read agent result for commit message
+          COMMIT_MSG="🤖 [Vibe Code] ${{ inputs.prompt }}"
+          if [ -f .vibe-agent-result.json ]; then
+            SUMMARY=$(node -e "const r=require('./.vibe-agent-result.json'); console.log(r.summary?.substring(0,200) || '')" 2>/dev/null || echo "")
+            if [ -n "$SUMMARY" ]; then
+              COMMIT_MSG="${COMMIT_MSG}\n\n${SUMMARY}"
+            fi
+          fi
+
+          # Create a new branch for the changes
+          BRANCH_NAME="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "${BRANCH_NAME}"
+
+          git config user.name "Vibe Code Bot"
+          git config user.email "vibe-code-bot@users.noreply.github.com"
+
+          git add -A
+          git commit -m "$(echo -e "${COMMIT_MSG}")"
+          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "${BRANCH_NAME}"
+
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.changes_count > 0
+        id: pr
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          cd /tmp/target-repo
+
+          PR_BODY=$(cat .vibe-agent-result.json | node -e "
+            const r = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+            const desc = r.prDescription || r.summary || '';
+            console.log(desc.substring(0, 5000));
+          " 2>/dev/null || echo "AI-generated changes for: ${{ inputs.prompt }}")
+
+          PR_URL=$(gh pr create \
+            --repo "${{ inputs.repo }}" \
+            --head "vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)" \
+            --base "${{ inputs.branch }}" \
+            --title "🤖 Vibe Code: ${{ inputs.prompt }}" \
+            --body "$(echo "${PR_BODY}")" \
+            2>&1)
+
+          echo "PR URL: ${PR_URL}"
+          echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
+
+      - name: Notify Worker - Success
+        if: success()
+        run: |
+          PR_URL="${{ steps.pr.outputs.pr_url }}"
+          if [ -f /tmp/target-repo/.vibe-agent-result.json ]; then
+            SUMMARY=$(node -e "const r=require('/tmp/target-repo/.vibe-agent-result.json'); console.log(r.summary?.substring(0,2000) || '')" 2>/dev/null || echo "Task completed")
+          else
+            SUMMARY="Task completed successfully"
+          fi
+
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e "
+              console.log(JSON.stringify({
+                success: true,
+                pr_url: '${PR_URL}',
+                summary: process.env.SUMMARY
+              }))
+            " 2>/dev/null || echo "{\"success\":true,\"pr_url\":\"\",\"summary\":\"${SUMMARY}\"}")" \
+            || echo "Failed to notify worker (non-critical)"
+
+      - name: Notify Worker - Failure
+        if: failure()
+        run: |
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
+            -H "Content-Type: application/json" \
+            -d '{"success":false,"error":"GitHub Actions workflow failed. Check the workflow run logs for details."}' \
+            || echo "Failed to notify worker (non-critical)"
