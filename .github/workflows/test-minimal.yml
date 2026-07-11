@@ -44,3 +44,120 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Clone target repo
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git clone --branch "${{ inputs.branch }}" --single-branch \
+            "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
+          ls /tmp/target-repo
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Aider
+        run: pip install aider-chat
+
+      - name: Clear history
+        if: inputs.clear_history == 'true'
+        run: |
+          cd /tmp/target-repo
+          rm -f .aider.chat.history.md .aider.input.history
+
+      - name: Web Search
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          QUERY="${{ inputs.prompt }}"
+          echo "=== WEB SEARCH ==="
+          SEARCH_RESULTS=""
+          if [ -n "$TAVILY_API_KEY" ]; then
+            TAVILY_RESP=$(curl -s -X POST "https://api.tavily.com/search" \
+              -H "Content-Type: application/json" \
+              -d "{\"api_key\":\"$TAVILY_API_KEY\",\"query\":\"$QUERY\",\"search_depth\":\"basic\",\"max_results\":5}" 2>&1)
+            SEARCH_RESULTS=$(echo "$TAVILY_RESP" | python3 -c "
+import sys,json
+d = json.load(sys.stdin)
+for i,r in enumerate(d.get('results',[])[:5]):
+    print(f'{i+1}. {r.get(\"title\",\"\")}\n   {r.get(\"url\",\"\")}\n   {r.get(\"content\",\"\")[:200]}\n')
+" 2>/dev/null)
+          fi
+          if [ -z "$SEARCH_RESULTS" ]; then
+            ENC_Q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
+            SEARCH_RESULTS=$(curl -s "https://html.duckduckgo.com/html/?q=$ENC_Q" \
+              -H "User-Agent: vibe-code-bot/1.0" | python3 -c "
+import sys,re,html as h
+t=sys.stdin.read()
+R=[]
+for m in re.finditer(r'<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>',t):
+    R.append({'u':m.group(1),'t':h.unescape(m.group(2).strip())})
+S=re.findall(r'<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>',t)
+for i,s in enumerate(S[:len(R)]):
+    R[i]['s']=h.unescape(re.sub(r'<[^>]+>','',s)).strip()
+for i,r in enumerate(R[:5]):
+    print(f'{i+1}. {r[\"t\"]}\n   {r[\"u\"]}\n   {r.get(\"s\",\"\")[:200]}\n')
+")
+          fi
+          if [ -n "$SEARCH_RESULTS" ]; then
+            echo "$SEARCH_RESULTS" > /tmp/web-results.txt
+            cat /tmp/web-results.txt
+          fi
+
+      - name: Notify Started
+        run: |
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"type\":\"started\",\"message\":\"Aider (${{ inputs.model }}) starting...\"}" || true
+
+      - name: Run Aider
+        env:
+          OPENAI_API_BASE: https://api.deepseek.com/v1
+          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          CB_URL: ${{ inputs.callback_url }}
+          CB_SECRET: ${{ inputs.callback_secret }}
+        run: |
+          cd /tmp/target-repo
+          MSG="${{ inputs.prompt }}"
+          if [ -f /tmp/web-results.txt ] && [ -s /tmp/web-results.txt ]; then
+            MSG="${MSG}\n\nWeb search results:\n$(cat /tmp/web-results.txt)"
+          fi
+          aider --yes --model "openai/${{ inputs.model }}" --message "$MSG" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+          python3 << 'PYEOF'
+          import urllib.request, json, os, subprocess, re
+          cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
+          def notify(msg):
+              try:
+                  d = json.dumps({"type":"progress","message":msg[:550]}).encode()
+                  r = urllib.request.Request(cb, data=d, headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}, method='POST')
+                  urllib.request.urlopen(r, timeout=5)
+              except: pass
+          with open('/tmp/aider.log') as f:
+              log = re.sub(r'[━┃┏┓┗┛┣┫┳┻╋╭╮╰╯│─▐▌▀▄█]','',f.read())
+          sent = 0
+          for s in log.split('\n'):
+              s = s.strip()
+              if not s or len(s) < 5: continue
+              if s.startswith('    ') or s.startswith('Traceback'): continue
+              if 'File "' in s and 'line' in s: continue
+              pfx = ""
+              if any(w in s for w in ['Creating','Created','Wrote','Modified','write','create']): pfx="📄 "
+              elif any(w in s for w in ['Applied','Edited','edit','patch']): pfx="✏️ "
+              elif any(w in s for w in ['scraping','repo-map','map','context']): pfx="🔍 "
+              elif any(w in s for w in ['Ran','test','Test','run','python']): pfx="🧪 "
+              elif any(w in s for w in ['error','Error','Failed','fail']): pfx="⚠️ "
+              elif any(w in s for w in ['commit','Commit']): pfx="💾 "
+              elif any(w in s for w in ['diff','Diff','change']): pfx="📊 "
+              elif any(w in s for w in ['model','Model','token','Token']): pfx="💰 "
+              elif any(w in s for w in ['Aider','aider']): pfx="🤖 "
+              notify(f"{pfx}{s}")
+              sent += 1
+              if sent >= 20: break
+          r = subprocess.run(['git','diff','--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
+          if r.stdout.strip():
+              notify(f"📊 Diff:\n{r.stdout.strip()[:450]}")
+          r2 = subprocess.run(['git','diff','--name-only'], capture_output=True, text=True, cwd='/tmp/target-repo')
+          if r2.stdout.strip():
+              notify(f"📁 Files ({len(r2.stdout.strip().split(chr(10)))}):\n" + '\n'.join(f'  • {f}' for f in r2.stdout.strip().split('\n')[:15]))
+          PYEOF
