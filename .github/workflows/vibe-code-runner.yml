@@ -36,7 +36,7 @@ jobs:
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d '{"type":"started","message":"Aider is analyzing your repo..."}' || true
+            -d '{"type":"started","message":"Aider is analyzing your repo and planning changes..."}' || true
 
       - name: Run Aider + DeepSeek (with progress capture)
         id: aider
@@ -49,11 +49,12 @@ jobs:
           echo "=== AIDER + DEEPSEEK ==="
           echo "Job: ${{ inputs.job_id }}"
           echo "Prompt: ${{ inputs.prompt }}"
+          echo "Model: ${{ inputs.model }}"
           echo "========================="
 
           cd /tmp/target-repo
 
-          # Run Aider and capture output to log
+          # Run Aider and capture EVERYTHING
           aider \
             --yes \
             --model openai/${{ inputs.model }} \
@@ -62,53 +63,68 @@ jobs:
             2>&1 | tee /tmp/aider-output.log
 
           AIDER_EXIT=${PIPESTATUS[0]}
-          echo "aider_exit=${AIDER_EXIT}"
+          echo "aider_exit=${AIDER_EXIT}" >> /tmp/aider-result.env
 
-          # Send progress: what files were changed
-          echo ""
-          echo "=== CHANGES ==="
-          git diff --stat 2>/dev/null || echo "(no changes yet)"
-
-          # Parse Aider output for key events and send as progress
+          # Send progress: Aider output summary + file changes
           python3 << 'PYEOF'
-          import urllib.request, json, os, re
+          import urllib.request, json, os, subprocess
 
-          callback_url = os.environ['CALLBACK_URL']
-          callback_secret = os.environ['CALLBACK_SECRET']
+          cb = os.environ['CALLBACK_URL']
+          cs = os.environ['CALLBACK_SECRET']
 
-          def notify(msg, file_count=0):
-              data = json.dumps({"type":"progress","message":msg,"file_count":file_count}).encode()
-              req = urllib.request.Request(callback_url,
-                  data=data,
-                  headers={'Authorization': f'Bearer {callback_secret}', 'Content-Type': 'application/json'},
-                  method='POST')
-              try: urllib.request.urlopen(req, timeout=5)
+          def notify(msg):
+              try:
+                  data = json.dumps({"type":"progress","message":msg}).encode()
+                  req = urllib.request.Request(cb, data=data,
+                      headers={'Authorization': f'Bearer {cs}', 'Content-Type': 'application/json'}, method='POST')
+                  urllib.request.urlopen(req, timeout=5)
               except: pass
 
+          # Read Aider log and extract key lines
           with open('/tmp/aider-output.log') as f:
               log = f.read()
 
           lines = log.split('\n')
-          for line in lines:
-              line = line.strip()
-              if not line: continue
-              # Capture planning
-              if 'scraping' in line.lower() or 'repo-map' in line.lower():
-                  notify(f"🔍 {line[:200]}")
-              elif 'Creating new file' in line or 'Created' in line and '.py' in line or '.js' in line or '.html' in line or '.css' in line:
-                  notify(f"📄 {line[:200]}")
-              elif 'Applied edit to' in line:
-                  notify(f"✏️ {line[:200]}")
-              elif 'Ran ' in line:
-                  notify(f"🧪 {line[:200]}")
-              elif 'Failed' in line or 'Error' in line or 'error' in line:
-                  notify(f"⚠️ {line[:200]}")
+          key_lines = []
+          keywords = ['Creating', 'Created', 'Applied', 'Edited', 'Wrote', 'Modified',
+                      'scraping', 'repo-map', 'plan', 'Plan', 'Ran ', 'error', 'Error',
+                      'Failed', 'Warning', 'diff', 'Diff', 'commit', 'Commit',
+                      'file', 'File', 'test', 'Test', 'model', 'token']
 
-          # Send file summary
-          import subprocess
-          result = subprocess.run(['git', 'diff', '--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
-          if result.stdout.strip():
-              notify(f"📊 Files changed:\n{result.stdout.strip()[:500]}")
+          for line in lines:
+              s = line.strip()
+              if not s or len(s) < 5: continue
+              # Skip pure framework/timing noise
+              if any(skip in s for skip in ['Traceback', 'File "', '  File ', '    ']): continue
+              # Capture lines with key action words
+              for kw in keywords:
+                  if kw in s:
+                      key_lines.append(s[:250])
+                      break
+
+          # Deduplicate and limit
+          seen = set()
+          unique = []
+          for l in key_lines:
+              if l not in seen:
+                  seen.add(l)
+                  unique.append(l)
+
+          # Send progress (max 8 messages to avoid spam)
+          for l in unique[:8]:
+              prefix = ""
+              if any(w in l for w in ['Creating', 'Created', 'Wrote', 'Modified']): prefix = "📄 "
+              elif any(w in l for w in ['Applied', 'Edited']): prefix = "✏️ "
+              elif any(w in l for w in ['scraping', 'repo-map']): prefix = "🔍 "
+              elif any(w in l for w in ['Ran ', 'test', 'Test']): prefix = "🧪 "
+              elif any(w in l for w in ['error', 'Error', 'Failed']): prefix = "⚠️ "
+              elif any(w in l for w in ['commit', 'Commit']): prefix = "💾 "
+              notify(f"{prefix}{l}")
+
+          # Send diff summary
+          r = subprocess.run(['git', 'diff', '--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
+          if r.stdout.strip():
+              notify(f"📊 Changes:\n{r.stdout.strip()[:400]}")
           PYEOF
 
       - name: Check changes
