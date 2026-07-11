@@ -92,25 +92,17 @@ jobs:
               except: pass
           with open('/tmp/aider.log') as f:
               log = re.sub(r'[━┃┏┓┗┛┣┫┳┻╋╭╮╰╯│─▐▌▀▄█]','',f.read())
+          # Send every meaningful line from Aider output (max 25)
           sent = 0
           for s in log.split('\n'):
               s = s.strip()
-              if not s or len(s) < 5: continue
+              if not s or len(s) < 8: continue
               if s.startswith('    ') or s.startswith('Traceback'): continue
-              if 'File "' in s and 'line' in s: continue
-              pfx = ""
-              if any(w in s for w in ['Creating','Created','Wrote','Modified','write','create']): pfx="📄 "
-              elif any(w in s for w in ['Applied','Edited','edit','patch']): pfx="✏️ "
-              elif any(w in s for w in ['scraping','repo-map','map','context']): pfx="🔍 "
-              elif any(w in s for w in ['Ran','test','Test','run','python']): pfx="🧪 "
-              elif any(w in s for w in ['error','Error','Failed','fail']): pfx="⚠️ "
-              elif any(w in s for w in ['commit','Commit']): pfx="💾 "
-              elif any(w in s for w in ['diff','Diff','change']): pfx="📊 "
-              elif any(w in s for w in ['model','Model','token','Token']): pfx="💰 "
-              elif any(w in s for w in ['Aider','aider']): pfx="🤖 "
-              notify(f"{pfx}{s}")
+              if 'File "' in s and 'line' in s: continue  # stack traces
+              if s.startswith(('202','203','204','205')): continue  # timestamps
+              notify(s[:550])
               sent += 1
-              if sent >= 20: break
+              if sent >= 25: break
           r = subprocess.run(['git','diff','--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r.stdout.strip():
               notify(f"📊 Diff:\n{r.stdout.strip()[:450]}")
