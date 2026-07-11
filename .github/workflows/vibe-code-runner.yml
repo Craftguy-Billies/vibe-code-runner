@@ -31,51 +31,81 @@ jobs:
       - name: Install Aider
         run: pip install aider-chat
 
+      - name: Clear history (if /newchat)
+        if: inputs.clear_history == 'true'
+        run: |
+          cd /tmp/target-repo
+          rm -f .aider.chat.history.md .aider.input.history
+          echo "History cleared"
+
+      - name: Web Search (Tavily primary, DuckDuckGo fallback)
+        id: websearch
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          QUERY="${{ inputs.prompt }}"
+          echo "=== WEB SEARCH: ${QUERY:0:150} ==="
+
+          SEARCH_RESULTS=""
+
+          # Try Tavily first (AI-optimized search)
+          if [ -n "$TAVILY_API_KEY" ]; then
+            echo "Trying Tavily..."
+            TAVILY_RESP=$(curl -s -X POST "https://api.tavily.com/search" \
+              -H "Content-Type: application/json" \
+              -d "{\"api_key\":\"$TAVILY_API_KEY\",\"query\":\"$QUERY\",\"search_depth\":\"basic\",\"max_results\":5}" 2>&1)
+            if echo "$TAVILY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('results',[]))" 2>/dev/null; then
+              SEARCH_RESULTS=$(echo "$TAVILY_RESP" | python3 -c "
+import sys,json
+d = json.load(sys.stdin)
+for i, r in enumerate(d.get('results',[])[:5]):
+    print(f'{i+1}. {r.get(\"title\",\"\")}')
+    print(f'   {r.get(\"url\",\"\")}')
+    print(f'   {r.get(\"content\",\"\")[:200]}')
+    print()
+")
+              echo "Tavily: found $(echo "$SEARCH_RESULTS" | grep -c '^[0-9]') results"
+            else
+              echo "Tavily failed, response: ${TAVILY_RESP:0:200}"
+            fi
+          fi
+
+          # Fallback to DuckDuckGo
+          if [ -z "$SEARCH_RESULTS" ]; then
+            echo "Falling back to DuckDuckGo..."
+            ENCODED_Q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
+            SEARCH_RESULTS=$(curl -s "https://html.duckduckgo.com/html/?q=$ENCODED_Q" \
+              -H "User-Agent: vibe-code-bot/1.0" | python3 -c "
+import sys, re, html as h
+text = sys.stdin.read()
+results = []
+for m in re.finditer(r'<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>', text):
+    results.append({'url': m.group(1), 'title': h.unescape(m.group(2).strip())})
+snippets = re.findall(r'<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>', text)
+for i, s in enumerate(snippets[:len(results)]):
+    results[i]['snippet'] = h.unescape(re.sub(r'<[^>]+>', '', s)).strip()
+for i, r in enumerate(results[:5]):
+    print(f'{i+1}. {r[\"title\"]}')
+    print(f'   {r[\"url\"]}')
+    print(f'   {r.get(\"snippet\",\"\")[:200]}')
+    print()
+")
+          fi
+
+          if [ -n "$SEARCH_RESULTS" ]; then
+            echo "$SEARCH_RESULTS" > /tmp/web-results.txt
+            echo "=== WEB RESULTS ==="
+            cat /tmp/web-results.txt
+          else
+            echo "(no web results)"
+          fi
+
       - name: Notify - Started
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d "{\"type\":\"started\",\"message\":\"Aider (${{ inputs.model }}) is analyzing your repo...\"}" || true
-
-      - name: Clear history (if /newchat was used)
-        if: inputs.clear_history == 'true'
-        run: |
-          cd /tmp/target-repo
-          rm -f .aider.chat.history.md .aider.input.history
-          echo "Aider history cleared"
-
-      - name: Web Search (pre-Aider context)
-        id: websearch
-        run: |
-          cd /tmp/target-repo
-          # Extract searchable keywords from prompt (take first 200 chars, remove code-specific noise)
-          QUERY="${{ inputs.prompt }}"
-          echo "Searching: ${QUERY:0:200}"
-
-          # DuckDuckGo HTML search (free, no API key)
-          SEARCH_RESULTS=$(curl -s "https://html.duckduckgo.com/html/?q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")" \
-            -H "User-Agent: vibe-code-bot/1.0" | python3 -c "
-          import sys, re, html
-          text = sys.stdin.read()
-          results = []
-          for m in re.finditer(r'<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>', text):
-              results.append({'url': m.group(1), 'title': html.unescape(m.group(2).strip())})
-          # Also get snippets
-          snippets = re.findall(r'<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>', text)
-          for i, s in enumerate(snippets[:len(results)]):
-              results[i]['snippet'] = html.unescape(re.sub(r'<[^>]+>', '', s)).strip()
-          for i, r in enumerate(results[:5]):
-              print(f'{i+1}. {r[\"title\"]}\n   {r[\"url\"]}\n   {r.get(\"snippet\",\"\")[:200]}\n')
-          " 2>&1)
-
-          if [ -n "$SEARCH_RESULTS" ]; then
-            echo "$SEARCH_RESULTS" > /tmp/web-results.txt
-            echo "Found web results:"
-            cat /tmp/web-results.txt
-          else
-            echo "(no web results found)"
-          fi
+            -d "{\"type\":\"started\",\"message\":\"🤖 Aider (${{ inputs.model }}) starting...\"}" || true
 
       - name: Run Aider + DeepSeek
         id: aider
@@ -87,51 +117,36 @@ jobs:
         run: |
           cd /tmp/target-repo
 
-          # Build enhanced prompt with web search results
-          ENHANCED_PROMPT="${{ inputs.prompt }}"
+          # Build prompt with web search results
+          MSG="${{ inputs.prompt }}"
           if [ -f /tmp/web-results.txt ] && [ -s /tmp/web-results.txt ]; then
-            ENHANCED_PROMPT="${ENHANCED_PROMPT}\n\nRecent web search results that may help:\n$(cat /tmp/web-results.txt)"
+            MSG="${MSG}\n\nWeb search results that may help:\n$(cat /tmp/web-results.txt)"
           fi
 
-          aider --yes --model openai/${{ inputs.model }} --message "$ENHANCED_PROMPT" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+          aider --yes --model openai/${{ inputs.model }} --message "$MSG" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
 
-          echo "=== SENDING FULL AIDER OUTPUT AS PROGRESS ==="
+          # Parse and send progress
           python3 << 'PYEOF'
-          import urllib.request, json, os, subprocess
+          import urllib.request, json, os, subprocess, re
           cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
-
           def notify(msg):
               try:
-                  text = msg[:600]  # Telegram limit is 4096, keep progress msgs short
-                  d = json.dumps({"type":"progress","message":text}).encode()
+                  d = json.dumps({"type":"progress","message":msg[:550]}).encode()
                   r = urllib.request.Request(cb, data=d, headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}, method='POST')
                   urllib.request.urlopen(r, timeout=5)
-              except Exception as e:
-                  print(f"Notify failed: {e}")
+              except: pass
 
           with open('/tmp/aider.log') as f:
-              log = f.read()
+              log = re.sub(r'[━┃┏┓┗┛┣┫┳┻╋╭╮╰╯│─▐▌▀▄█]','',f.read())
 
-          # Remove noisy box-drawing chars and progress bars
-          import re
-          log = re.sub(r'[━┃┏┓┗┛┣┫┳┻╋╭╮╰╯│─▐▌▀▄█]', '', log)
-          log = re.sub(r'\d+/\d+ lines?\s+\.+', '', log)
-
-          lines = log.split('\n')
-          useful = []
-          for s in lines:
-              s = s.strip()
-              if not s or len(s) < 5: continue
-              # Skip pure noise
-              if s.startswith('    ') or s.startswith('Traceback'): continue
-              if s.startswith('File "') and 'line' in s: continue  # stack traces
-              if '━━' in s or '╭' in s or '╰' in s: continue  # box chars
-              useful.append(s)
-
-          # Send ALL useful lines as progress (up to 20 messages)
           sent = 0
-          for s in useful:
-              if sent >= 20: break
+          for line in log.split('\n'):
+              s = line.strip()
+              if not s or len(s) < 5: continue
+              if s.startswith('    ') or s.startswith('Traceback'): continue
+              if 'File "' in s and 'line' in s: continue
+              if any(c in s for c in '╭╰━━'): continue
+
               prefix = ""
               if any(w in s for w in ['Creating','Created','Wrote','Modified','write','create']): prefix = "📄 "
               elif any(w in s for w in ['Applied','Edited','edit','patch']): prefix = "✏️ "
@@ -142,19 +157,18 @@ jobs:
               elif any(w in s for w in ['diff','Diff','change']): prefix = "📊 "
               elif any(w in s for w in ['model','Model','token','Token','cost']): prefix = "💰 "
               elif any(w in s for w in ['Aider','aider']): prefix = "🤖 "
+
               notify(f"{prefix}{s}")
               sent += 1
+              if sent >= 20: break
 
-          # Send full diff stat as final progress
           r = subprocess.run(['git','diff','--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r.stdout.strip():
-              notify(f"📊 Diff stat:\n{r.stdout.strip()[:500]}")
-
-          # Send list of changed files
+              notify(f"📊 Diff:\n{r.stdout.strip()[:450]}")
           r2 = subprocess.run(['git','diff','--name-only'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r2.stdout.strip():
               files = r2.stdout.strip().split('\n')
-              notify(f"📁 Changed files ({len(files)}):\n" + '\n'.join(f'  • {f}' for f in files[:15]))
+              notify(f"📁 Files ({len(files)}):\n" + '\n'.join(f'  • {f}' for f in files[:15]))
           PYEOF
 
       - name: Check changes
