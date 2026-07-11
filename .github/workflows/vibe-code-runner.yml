@@ -101,7 +101,15 @@ jobs:
         run: |
           cd /tmp/target-repo
           echo "Model: openai/${{ inputs.model }}"
-          aider --yes --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+
+          # Set max tokens for DeepSeek (384K max, Aider default is too low)
+          export OPENAI_MAX_TOKENS=65536
+
+          aider --yes --model "openai/${{ inputs.model }}" \
+            --message "${{ inputs.prompt }}" \
+            --no-suggest-shell-commands \
+            --set-env OPENAI_MAX_TOKENS=65536 \
+            2>&1 | tee /tmp/aider.log
           AIDER_EXIT=${PIPESTATUS[0]}
           # Check if Aider actually did anything
           if [ ${AIDER_EXIT} -ne 0 ]; then
