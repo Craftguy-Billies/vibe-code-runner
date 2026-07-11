@@ -3,260 +3,154 @@ name: Vibe Code Runner
 on:
   workflow_dispatch:
     inputs:
-      job_id:
-        description: 'Job ID from the Worker queue'
-        required: true
-        type: string
-      repo:
-        description: 'Target repo (owner/repo)'
-        required: true
-        type: string
-      branch:
-        description: 'Target branch'
-        required: false
-        type: string
-        default: 'main'
-      prompt:
-        description: 'Coding task prompt'
-        required: true
-        type: string
-      callback_url:
-        description: 'Worker API URL to notify on completion'
-        required: true
-        type: string
-      callback_secret:
-        description: 'Secret for Worker API auth'
-        required: true
-        type: string
+      job_id: { required: true, type: string }
+      repo: { required: true, type: string }
+      branch: { required: false, type: string, default: 'main' }
+      prompt: { required: true, type: string }
+      callback_url: { required: true, type: string }
+      callback_secret: { required: true, type: string }
 
 jobs:
   vibe-code:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
-      - name: Clone runner repo (for agent script)
-        uses: actions/checkout@v4
-
       - name: Clone target repo
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+        env: { GH_PAT: '${{ secrets.GH_PAT }}' }
         run: |
-          echo "Cloning target repo: ${{ inputs.repo }} (branch: ${{ inputs.branch }})"
-          git clone \
-            --branch "${{ inputs.branch }}" \
-            --single-branch \
-            "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" \
-            /tmp/target-repo
-          echo "Target repo cloned to /tmp/target-repo"
+          git clone --branch "${{ inputs.branch }}" --single-branch \
+            "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
+          echo "Target repo ready"
           ls -la /tmp/target-repo
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
 
-      - name: Install agent dependencies
-        run: |
-          cd ${{ github.workspace }}/agent
-          npm install
-          echo "Agent dependencies installed"
+      - name: Install Cline CLI
+        run: npm install -g cline
 
-      - name: Run Vibe Code Agent
+      - name: Run Cline + DeepSeek (auto-approve, no yolo)
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          echo "========================================="
-          echo "Running Vibe Code Agent"
-          echo "Job ID: ${{ inputs.job_id }}"
+          echo "=== CLINE + DEEPSEEK AGENT ==="
+          echo "Job: ${{ inputs.job_id }}"
           echo "Prompt: ${{ inputs.prompt }}"
-          echo "========================================="
+          echo "================================"
 
-          node ${{ github.workspace }}/agent/vibe-agent.js \
-            --prompt "$(cat <<'PROMPT'
-          ${{ inputs.prompt }}
-          PROMPT
-          )" \
-            --repo-dir /tmp/target-repo \
-            --max-iters 25
-
-          echo "Agent run complete. Checking results..."
-
-          if [ -f /tmp/target-repo/.vibe-agent-result.json ]; then
-            cat /tmp/target-repo/.vibe-agent-result.json
-          fi
-
-      - name: Start Live Preview (Cloudflare Tunnel)
-        id: preview
-        run: |
           cd /tmp/target-repo
 
-          # Install cloudflared
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
+          echo "${{ inputs.prompt }}" | cline \
+            -P openai-native \
+            -k "$OPENAI_API_KEY" \
+            -m deepseek-chat \
+            --baseurl https://api.deepseek.com/v1 \
+            --auto-approve true
 
-          # Detect app type and start dev server
-          PORT=8080
-          if [ -f "package.json" ]; then
-            echo "Node.js project detected"
-            if grep -q '"dev"' package.json 2>/dev/null; then
-              npm install --silent 2>/dev/null || true
-              npm run dev -- --port $PORT --host 0.0.0.0 &
-            elif grep -q '"start"' package.json 2>/dev/null; then
-              npm install --silent 2>/dev/null || true
-              PORT=$PORT npm start &
-            else
-              npx serve -l $PORT -s . &
-            fi
-          elif [ -f "index.html" ]; then
-            echo "Static site detected"
-            npx serve -l $PORT -s . &
-          elif [ -f "requirements.txt" ]; then
-            echo "Python project detected"
-            pip install -r requirements.txt --quiet 2>/dev/null || true
-            python -m http.server $PORT &
-          else
-            # Generic: serve the whole directory
-            npx serve -l $PORT -s . &
-          fi
+          EXIT_CODE=$?
+          echo ""
+          echo "Cline exit code: ${EXIT_CODE}"
+          echo "cline_exit_code=${EXIT_CODE}" >> /tmp/cline-result.env
 
-          sleep 3
-
-          # Start Cloudflare Tunnel
-          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tunnel.log 2>&1 &
-          sleep 5
-
-          # Extract the tunnel URL
-          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
-          if [ -n "$TUNNEL_URL" ]; then
-            echo "🔗 Live Preview: $TUNNEL_URL"
-            echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
-            # Save for PR description
-            echo "$TUNNEL_URL" > /tmp/target-repo/.vibe-preview-url
-          else
-            echo "⚠️ Could not extract tunnel URL. Tunnel log:"
-            cat /tmp/tunnel.log
-            echo "preview_url=" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Check for changes
+      - name: Check changes
         id: changes
         run: |
           cd /tmp/target-repo
           git status --porcelain
           CHANGES=$(git status --porcelain | wc -l)
           echo "changes_count=${CHANGES}" >> $GITHUB_OUTPUT
-          if [ "${CHANGES}" -gt 0 ]; then
-            echo "Found ${CHANGES} changed files"
-          else
-            echo "No changes detected"
-          fi
+          if [ "${CHANGES}" -gt 0 ]; then git diff --stat; fi
 
-      - name: Commit and push changes
-        if: steps.changes.outputs.changes_count > 0
-        id: commit
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+      - name: Start Live Preview (Cloudflare Tunnel)
+        id: preview
         run: |
           cd /tmp/target-repo
-
-          # Read agent result for commit message
-          COMMIT_MSG="🤖 [Vibe Code] ${{ inputs.prompt }}"
-          if [ -f .vibe-agent-result.json ]; then
-            SUMMARY=$(node -e "const r=require('./.vibe-agent-result.json'); console.log(r.summary?.substring(0,200) || '')" 2>/dev/null || echo "")
-            if [ -n "$SUMMARY" ]; then
-              COMMIT_MSG="${COMMIT_MSG}\n\n${SUMMARY}"
-            fi
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          PORT=8080
+          if [ -f "package.json" ]; then
+            npm install --silent 2>/dev/null || true
+            (grep -q '"dev"' package.json && npm run dev -- --port $PORT --host 0.0.0.0 &) || \
+            (grep -q '"start"' package.json && PORT=$PORT npm start &) || \
+            (npx serve -l $PORT -s . &)
+          else
+            npx serve -l $PORT -s . &
+          fi
+          sleep 3
+          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tunnel.log 2>&1 &
+          sleep 5
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+            echo "Live Preview: $TUNNEL_URL"
+            echo "$TUNNEL_URL" > /tmp/target-repo/.vibe-preview-url
+          else
+            echo "preview_url=" >> $GITHUB_OUTPUT
           fi
 
-          # Create a new branch for the changes
-          BRANCH_NAME="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
-          git checkout -b "${BRANCH_NAME}"
-
+      - name: Commit and push
+        if: steps.changes.outputs.changes_count > 0
+        id: commit
+        env: { GH_PAT: '${{ secrets.GH_PAT }}' }
+        run: |
+          cd /tmp/target-repo
+          BRANCH="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
           git config user.name "Vibe Code Bot"
           git config user.email "vibe-code-bot@users.noreply.github.com"
-
           git add -A
-          git commit -m "$(echo -e "${COMMIT_MSG}")"
-          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "${BRANCH_NAME}"
-
-          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          git commit -m "Vibe Code: ${{ inputs.prompt }}"
+          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$BRANCH"
+          echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
 
       - name: Create Pull Request
         if: steps.changes.outputs.changes_count > 0
         id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+        env: { GH_TOKEN: '${{ secrets.GH_PAT }}' }
         run: |
           cd /tmp/target-repo
-          BRANCH_NAME="${{ steps.commit.outputs.branch_name }}"
-
           PREVIEW_URL="${{ steps.preview.outputs.preview_url }}"
-          PR_BODY=$(cat .vibe-agent-result.json | node -e "
-            const r = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-            const desc = r.prDescription || r.summary || '';
-            const preview = '${PREVIEW_URL}';
-            let body = desc.substring(0, 5000);
-            if (preview) {
-              body += '\n\n## Live Preview\n' + preview + '\n_(temporary URL, valid for a few minutes)_';
-            }
-            console.log(body);
-          " 2>/dev/null || echo "AI-generated changes for: ${{ inputs.prompt }}")
+          BODY="## Vibe Code Bot
+
+          Prompt: ${{ inputs.prompt }}
+
+          Built with Cline + DeepSeek API"
+
+          if [ -n "$PREVIEW_URL" ]; then
+            BODY="${BODY}
+
+          Live Preview: ${PREVIEW_URL}
+          (temporary, ~2 min)"
+          fi
 
           PR_URL=$(gh pr create \
             --repo "${{ inputs.repo }}" \
-            --head "${BRANCH_NAME}" \
+            --head "${{ steps.commit.outputs.branch_name }}" \
             --base "${{ inputs.branch }}" \
             --title "Vibe Code: ${{ inputs.prompt }}" \
-            --body "${PR_BODY}" \
-            2>&1)
-
-          echo "PR URL: ${PR_URL}"
+            --body "${BODY}" 2>&1)
+          echo "PR: ${PR_URL}"
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
 
-      - name: Notify Worker - Success
+      - name: Notify Worker
         if: success()
         run: |
-          PR_URL="${{ steps.pr.outputs.pr_url }}"
-          PREVIEW_URL="${{ steps.preview.outputs.preview_url }}"
-          if [ -f /tmp/target-repo/.vibe-agent-result.json ]; then
-            SUMMARY=$(node -e "const r=require('/tmp/target-repo/.vibe-agent-result.json'); console.log(r.summary?.substring(0,2000) || '')" 2>/dev/null || echo "Task completed")
-          else
-            SUMMARY="Task completed successfully"
-          fi
-          if [ -n "$PREVIEW_URL" ]; then
-            SUMMARY="${SUMMARY}\n\nLive Preview: ${PREVIEW_URL}"
-          fi
-
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d "$(node -e "
-              console.log(JSON.stringify({
-                success: true,
-                pr_url: '${PR_URL}',
-                preview_url: '${PREVIEW_URL}',
-                summary: process.env.SUMMARY
-              }))
-            " 2>/dev/null || echo "{\"success\":true,\"pr_url\":\"\",\"preview_url\":\"\",\"summary\":\"${SUMMARY}\"}")" \
-            || echo "Failed to notify worker (non-critical)"
+            -d "{\"success\":true,\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"summary\":\"Completed with Cline + DeepSeek\"}" || true
 
-      - name: Notify Worker - Failure
+      - name: Notify Worker - Fail
         if: failure()
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d '{"success":false,"error":"GitHub Actions workflow failed. Check the workflow run logs for details."}' \
-            || echo "Failed to notify worker (non-critical)"
+            -d '{"success":false,"error":"Workflow failed"}' || true
 
-      - name: Hold for Preview
+      - name: Hold Preview
         if: success() && steps.preview.outputs.preview_url != ''
         run: |
-          echo "========================================="
-          echo " LIVE PREVIEW STILL ACTIVE"
-          echo " ${{ steps.preview.outputs.preview_url }}"
-          echo " Open this URL on your phone NOW"
-          echo " Tunnel will close in 120 seconds..."
-          echo "========================================="
-          sleep 120
+          echo "=== LIVE: ${{ steps.preview.outputs.preview_url }} ==="
+          sleep 90
