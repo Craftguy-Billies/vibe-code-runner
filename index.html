@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VibeCode — Build at the Speed of Thought</title>
+  <style>
+    /* ===== RESET & BASE ===== */
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+      background: #0b0d17;
+      color: #e2e8f0;
+      line-height: 1.6;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ===== ANIMATED BACKGROUND ===== */
+    .bg-grid {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      background-image:
+        linear-gradient(rgba(99, 102, 241, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(99, 102, 241, 0.07) 1px, transparent 1px);
+      background-size: 60px 60px;
+      pointer-events: none;
+    }
+
+    .bg-glow {
+      position: fixed;
+      top: -30%;
+      left: -10%;
+      width: 80%;
+      height: 80%;
+      z-index: 0;
+      background: radial-gradient(circle at 30% 40%, rgba(99, 102, 241, 0.15), transparent 70%);
+      pointer-events: none;
+      animation: floatGlow 12s ease-in-out infinite alternate;
+    }
+
+    .bg-glow-2 {
+      position: fixed;
+      bottom: -20%;
+      right: -10%;
+      width: 70%;
+      height: 70%;
+      z-index: 0;
+      background: radial-gradient(circle at 70% 60%, rgba(236, 72, 153, 0.10), transparent 70%);
+      pointer-events: none;
+      animation: floatGlow 15s ease-in-out infinite alternate-reverse;
+    }
+
+    @keyframes floatGlow {
+      0%   { transform: translate(0, 0) scale(1); }
+      100% { transform: translate(40px, -30px) scale(1.1); }
+    }
+
+    /* ===== FLOATING ORBS ===== */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(80px);
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.4;
+    }
+    .orb-1 {
+      width: 300px;
+      height: 300px;
+      background: #6366f1;
+      top: 10%;
+      left: 5%;
+      animation: orbFloat 20s ease-in-out infinite;
+    }
+    .orb-2 {
+      width: 250px;
+      height: 250px;
+      background: #ec4899;
+      bottom: 15%;
+      right: 8%;
+      animation: orbFloat 25s ease-in-out infinite reverse;
+    }
+    .orb-3 {
+      width: 200px;
+      height: 200px;
+      background: #06b6d4;
+      top: 50%;
+      left: 60%;
+      animation: orbFloat 18s ease-in-out infinite 3s;
+    }
+
+    @keyframes orbFloat {
+      0%   { transform: translate(0, 0) scale(1); }
+      33%  { transform: translate(50px, -40px) scale(1.15); }
+      66%  { transform: translate(-30px, 30px) scale(0.9); }
+      100% { transform: translate(0, 0) scale(1); }
+    }
+
+    /* ===== NAV ===== */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      z-index: 100;
+      padding: 1.2rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(11, 13, 23, 0.6);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #fff;
+      text-decoration: none;
+    }
+
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #6366f1, #a855f7);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: #fff;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+      align-items: center;
+    }
+
+    .nav-links a {
+      color: #94a3b8;
+      text-decoration: none;
+      font-size: 0.95rem;
+      font-weight: 500;
+      transition: color 0.3s;
+    }
+
+    .nav-links a:hover {
+      color: #fff;
+    }
+
+    .nav-cta {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff !important;
+      padding: 0.5rem 1.4rem;
+      border-radius: 8px;
+      font-weight: 600 !important;
+      transition: transform 0.2s, box-shadow 0.3s !important;
+    }
+
+    .nav-cta:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+    }
+
+    /* Hamburger */
+    .hamburger {
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 4px;
+    }
+
+    .hamburger span {
+      display: block;
+      width: 26px;
+      height: 2.5px;
+      background: #e2e8f0;
+      border-radius: 2px;
+      transition: all 0.3s;
+    }
+
+    /* ===== HERO ===== */
+    .hero {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 8rem 2rem 6rem;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(99, 102, 241, 0.12);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      border-radius: 100px;
+      padding: 0.4rem 1.2rem 0.4rem 0.6rem;
+      font-size: 0.85rem;
+      color: #a5b4fc;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s ease-out;
+    }
+
+    .hero-badge .dot {
+      width: 8px;
+      height: 8px;
+      background: #22c55e;
+      border-radius: 50%;
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .hero h1 {
+      font-size: clamp(2.6rem, 7vw, 4.8rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      color: #fff;
+      max-width: 900px;
+      margin-bottom: 1.2rem;
+      animation: fadeInUp 0.8s ease-out 0.1s both;
+    }
+
+    .hero h1 .gradient-text {
+      background: linear-gradient(135deg, #818cf8, #c084fc, #f472b6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      color: #94a3b8;
+      max-width: 600px;
+      margin-bottom: 2.5rem;
+      animation: fadeInUp 0.8s ease-out 0.2s both;
+    }
+
+    .hero-buttons {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      animation: fadeInUp 0.8s ease-out 0.3s both;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.9rem 2.2rem;
+      border-radius: 12px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.3s ease;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      box-shadow: 0 4px 24px rgba(99, 102, 241, 0.35);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 32px rgba(99, 102, 241, 0.5);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: #e2e8f0;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(4px);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.25);
+      transform: translateY(-3px);
+    }
+
+    .btn .arrow {
+      transition: transform 0.3s;
+    }
+
+    .btn-primary:hover .arrow {
+      transform: translateX(4px);
+    }
+
+    /* ===== STATS / SOCIAL PROOF ===== */
+    .stats {
+      display: flex;
+      gap: 3rem;
+      margin-top: 4rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      animation: fadeInUp 0.8s ease-out 0.4s both;
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-number {
+      font-size: 1.8rem;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.02em;
+    }
+
+    .stat-label {
+      font-size: 0.85rem;
+      color: #64748b;
+      margin-top: 0.2rem;
+    }
+
+    /* ===== FEATURES SECTION ===== */
+    .features {
+      position: relative;
+      z-index: 1;
+      padding: 6rem 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .features-header {
+      text-align: center;
+      margin-bottom: 4rem;
+    }
+
+    .features-header h2 {
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 1rem;
+    }
+
+    .features-header p {
+      color: #94a3b8;
+      max-width: 500px;
+      margin: 0 auto;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .feature-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 16px;
+      padding: 2rem;
+      transition: all 0.3s ease;
+    }
+
+    .feature-card:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(99, 102, 241, 0.25);
+      transform: translateY(-4px);
+    }
+
+    .feature-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      margin-bottom: 1.2rem;
+    }
+
+    .feature-icon.purple {
+      background: rgba(99, 102, 241, 0.15);
+    }
+    .feature-icon.pink {
+      background: rgba(236, 72, 153, 0.15);
+    }
+    .feature-icon.cyan {
+      background: rgba(6, 182, 212, 0.15);
+    }
+    .feature-icon.green {
+      background: rgba(34, 197, 94, 0.15);
+    }
+
+    .feature-card h3 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 0.6rem;
+    }
+
+    .feature-card p {
+      font-size: 0.9rem;
+      color: #94a3b8;
+      line-height: 1.7;
+    }
+
+    /* ===== CTA SECTION ===== */
+    .cta-section {
+      position: relative;
+      z-index: 1;
+      padding: 6rem 2rem;
+      text-align: center;
+    }
+
+    .cta-box {
+      max-width: 700px;
+      margin: 0 auto;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(236, 72, 153, 0.06));
+      border: 1px solid rgba(99, 102, 241, 0.15);
+      border-radius: 24px;
+      padding: 4rem 3rem;
+      backdrop-filter: blur(8px);
+    }
+
+    .cta-box h2 {
+      font-size: clamp(1.8rem, 3.5vw, 2.6rem);
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 1rem;
+    }
+
+    .cta-box p {
+      color: #94a3b8;
+      margin-bottom: 2rem;
+      font-size: 1.05rem;
+    }
+
+    .cta-box .btn-primary {
+      font-size: 1.1rem;
+      padding: 1rem 2.8rem;
+    }
+
+    /* ===== FOOTER ===== */
+    footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 2rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      color: #475569;
+      font-size: 0.85rem;
+    }
+
+    /* ===== ANIMATIONS ===== */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 768px) {
+      nav {
+        padding: 1rem 1.5rem;
+      }
+
+      .nav-links {
+        position: fixed;
+        top: 0;
+        right: -100%;
+        width: 260px;
+        height: 100vh;
+        background: rgba(11, 13, 23, 0.97);
+        backdrop-filter: blur(20px);
+        flex-direction: column;
+        padding: 5rem 2rem 2rem;
+        gap: 1.5rem;
+        transition: right 0.4s ease;
+        border-left: 1px solid rgba(99, 102, 241, 0.15);
+      }
+
+      .nav-links.open {
+        right: 0;
+      }
+
+      .hamburger {
+        display: flex;
+        z-index: 200;
+      }
+
+      .hamburger.active span:nth-child(1) {
+        transform: rotate(45deg) translate(5px, 5px);
+      }
+      .hamburger.active span:nth-child(2) {
+        opacity: 0;
+      }
+      .hamburger.active span:nth-child(3) {
+        transform: rotate(-45deg) translate(5px, -5px);
+      }
+
+      .hero {
+        padding: 7rem 1.5rem 4rem;
+      }
+
+      .stats {
+        gap: 2rem;
+      }
+
+      .cta-box {
+        padding: 3rem 1.5rem;
+      }
+
+      .features {
+        padding: 4rem 1.5rem;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .hero-buttons .btn {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .stats {
+        flex-direction: column;
+        gap: 1.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== BACKGROUND EFFECTS ===== -->
+  <div class="bg-grid"></div>
+  <div class="bg-glow"></div>
+  <div class="bg-glow-2"></div>
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+
+  <!-- ===== NAV ===== -->
+  <nav>
+    <a href="#" class="logo">
+      <span class="logo-icon">V</span>
+      VibeCode
+    </a>
+
+    <ul class="nav-links" id="navLinks">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#">Docs</a></li>
+      <li><a href="#">Pricing</a></li>
+      <li><a href="#" class="nav-cta">Get Started</a></li>
+    </ul>
+
+    <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+  </nav>
+
+  <!-- ===== HERO ===== -->
+  <section class="hero">
+    <div class="hero-badge">
+      <span class="dot"></span>
+      Now in public beta
+    </div>
+
+    <h1>
+      Build at the<br>
+      <span class="gradient-text">Speed of Thought</span>
+    </h1>
+
+    <p>
+      VibeCode is the AI-powered development platform that turns your ideas
+      into production-ready code — in minutes, not days.
+    </p>
+
+    <div class="hero-buttons">
+      <a href="#" class="btn btn-primary">
+        Start Building Free
+        <span class="arrow">→</span>
+      </a>
+      <a href="#" class="btn btn-secondary">
+        Watch Demo
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      </a>
+    </div>
+
+    <div class="stats">
+      <div class="stat-item">
+        <div class="stat-number">12k+</div>
+        <div class="stat-label">Developers</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">98%</div>
+        <div class="stat-label">Satisfaction</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">50k+</div>
+        <div class="stat-label">Projects Built</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== FEATURES ===== -->
+  <section class="features" id="features">
+    <div class="features-header">
+      <h2>Everything you need to ship faster</h2>
+      <p>From idea to deployment, VibeCode handles the heavy lifting so you can focus on what matters.</p>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon purple">⚡</div>
+        <h3>AI-Powered Generation</h3>
+        <p>Describe what you want in plain English and watch as VibeCode generates clean, production-ready code in real time.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon pink">🎨</div>
+        <h3>Beautiful by Default</h3>
+        <p>Every output is crafted with modern design principles — responsive, accessible, and visually stunning out of the box.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon cyan">🔗</div>
+        <h3>Seamless Integrations</h3>
+        <p>Connect with GitHub, Vercel, Supabase, and your entire stack. VibeCode fits right into your existing workflow.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon green">🛡️</div>
+        <h3>Enterprise-Grade Security</h3>
+        <p>Your code is encrypted end-to-end, SOC 2 compliant, and never used for training. Built for teams that take security seriously.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== CTA ===== -->
+  <section class="cta-section">
+    <div class="cta-box">
+      <h2>Ready to build something amazing?</h2>
+      <p>Join thousands of developers who are already shipping faster with VibeCode. Start free — no credit card required.</p>
+      <a href="#" class="btn btn-primary">
+        Get Started Free
+        <span class="arrow">→</span>
+      </a>
+    </div>
+  </section>
+
+  <!-- ===== FOOTER ===== -->
+  <footer>
+    &copy; 2025 VibeCode. Built with ❤️ for developers everywhere.
+  </footer>
+
+  <!-- ===== MOBILE MENU TOGGLE ===== -->
+  <script>
+    const hamburger = document.getElementById('hamburger');
+    const navLinks = document.getElementById('navLinks');
+
+    hamburger.addEventListener('click', () => {
+      hamburger.classList.toggle('active');
+      navLinks.classList.toggle('open');
+    });
+
+    // Close menu when a link is clicked
+    navLinks.querySelectorAll('a').forEach(link => {
+      link.addEventListener('click', () => {
+        hamburger.classList.remove('active');
+        navLinks.classList.remove('open');
+      });
+    });
+  </script>
+</body>
+</html>
