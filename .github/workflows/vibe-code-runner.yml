@@ -8,6 +8,7 @@ on:
       branch: { required: false, type: string, default: 'main' }
       prompt: { required: true, type: string }
       model: { required: false, type: string, default: 'deepseek-v4-flash' }
+      clear_history: { required: false, type: string, default: 'false' }
       callback_url: { required: true, type: string }
       callback_secret: { required: true, type: string }
 
@@ -36,6 +37,13 @@ jobs:
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
             -d "{\"type\":\"started\",\"message\":\"Aider (${{ inputs.model }}) is analyzing your repo...\"}" || true
+
+      - name: Clear history (if /newchat was used)
+        if: inputs.clear_history == 'true'
+        run: |
+          cd /tmp/target-repo
+          rm -f .aider.chat.history.md .aider.input.history
+          echo "Aider history cleared for fresh conversation"
 
       - name: Run Aider + DeepSeek
         id: aider
