@@ -65,6 +65,45 @@ jobs:
           cd /tmp/target-repo
           rm -f .aider.chat.history.md .aider.input.history
 
+      - name: Web Search
+        run: |
+          QUERY="${{ inputs.prompt }}"
+          echo "=== WEB SEARCH ==="
+          TKEY="${{ secrets.TAVILY_API_KEY }}"
+          if [ -n "$TKEY" ]; then
+            python3 -c "
+import urllib.request, json
+q='${QUERY}'
+d=json.dumps({'api_key':'${TKEY}','query':q,'search_depth':'basic','max_results':5}).encode()
+r=urllib.request.urlopen(urllib.request.Request('https://api.tavily.com/search',data=d,headers={'Content-Type':'application/json'}))
+for i,r in enumerate(json.loads(r.read()).get('results',[])[:5]):
+    print(f'{i+1}. {r.get(\"title\",\"\")}')
+    print(f'   {r.get(\"url\",\"\")}')
+    print(f'   {r.get(\"content\",\"\")[:200]}')
+    print()
+" > /tmp/web-results.txt 2>/dev/null
+          fi
+          if [ ! -s /tmp/web-results.txt ]; then
+            ENC_Q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
+            curl -s "https://html.duckduckgo.com/html/?q=${ENC_Q}" -H "User-Agent: vibe-code-bot/1.0" | python3 -c "
+import sys,re,html as h
+t=sys.stdin.read()
+R=[]
+for m in re.finditer(r'<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>',t):
+    R.append({'u':m.group(1),'t':h.unescape(m.group(2).strip())})
+S=re.findall(r'<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>',t)
+for i,s in enumerate(S[:len(R)]):
+    R[i]['s']=h.unescape(re.sub(r'<[^>]+>','',s)).strip()
+for i,r in enumerate(R[:5]):
+    print(f'{i+1}. {r[\"t\"]}')
+    print(f'   {r[\"u\"]}')
+    print(f'   {r.get(\"s\",\"\")[:200]}')
+    print()
+" > /tmp/web-results.txt
+          fi
+          echo "=== WEB RESULTS ==="
+          cat /tmp/web-results.txt 2>/dev/null || echo "(none)"
+
       - name: Notify Started
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
@@ -120,7 +159,8 @@ jobs:
               notify(f"📊 Diff:\n{r.stdout.strip()[:450]}")
           r2 = subprocess.run(['git','diff','--name-only'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r2.stdout.strip():
-              notify(f"📁 Files ({len(r2.stdout.strip().split(chr(10)))}):\n" + '\n'.join(f'  • {f}' for f in r2.stdout.strip().split('\n')[:15]))
+              files = r2.stdout.strip().split('\n')
+              notify(f"📁 Files ({len(files)}):\n" + '\n'.join(f'  o {f}' for f in files[:15]))
           PYEOF
 
       - name: Check changes
