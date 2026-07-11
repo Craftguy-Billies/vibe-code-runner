@@ -24,7 +24,7 @@ on:
         description: 'DeepSeek model'
         required: false
         type: string
-        default: 'deepseek-v4-flash'
+        default: 'deepseek-chat'
       clear_history:
         description: 'Clear chat history'
         required: false
@@ -69,10 +69,19 @@ jobs:
         run: |
           QUERY="${{ inputs.prompt }}"
           echo "=== WEB SEARCH ==="
-          ENC_Q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
-          curl -sL "https://html.duckduckgo.com/html/?q=${ENC_Q}" -H "User-Agent: vibe-code-bot/1.0" > /tmp/ddg.html
-          grep -oP '<a[^>]*class="result__a"[^>]*href="[^"]*"[^>]*>[^<]+</a>' /tmp/ddg.html | head -10 > /tmp/web-results.txt 2>/dev/null
-          grep -oP '<a[^>]*class="result__snippet"[^>]*>\K.*?(?=</a>)' /tmp/ddg.html | head -10 >> /tmp/web-results.txt 2>/dev/null
+          TKEY="${{ secrets.TAVILY_API_KEY }}"
+          if [ -n "$TKEY" ]; then
+            curl -s -X POST "https://api.tavily.com/search" \
+              -H "Content-Type: application/json" \
+              -d "{\"api_key\":\"$TKEY\",\"query\":\"${QUERY}\",\"search_depth\":\"basic\",\"max_results\":5}" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); [print(r['title'],r['url'],r.get('content','')[:200],sep='\n',end='\n\n') for r in d.get('results',[])]" \
+              > /tmp/web-results.txt 2>/dev/null
+          fi
+          if [ ! -s /tmp/web-results.txt ]; then
+            ENC_Q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
+            curl -sL "https://html.duckduckgo.com/html/?q=${ENC_Q}" -H "User-Agent: vibe-code-bot/1.0" \
+              | grep -oP '<a[^>]*class="result__a"[^>]*href="[^"]*"[^>]*>[^<]+</a>' | head -5 > /tmp/web-results.txt 2>/dev/null
+          fi
           echo "=== RESULTS ==="
           cat /tmp/web-results.txt 2>/dev/null || echo "(none)"
 
