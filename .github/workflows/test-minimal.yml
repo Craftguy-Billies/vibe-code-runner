@@ -1,13 +1,44 @@
-name: Test Dispatch
+name: Test All Inputs
 on:
   workflow_dispatch:
     inputs:
-      test:
-        description: 'Test input'
+      job_id:
+        description: 'Job ID'
+        required: true
+        type: string
+      repo:
+        description: 'Repo'
+        required: true
+        type: string
+      branch:
+        description: 'Branch'
+        required: false
+        type: string
+        default: 'main'
+      prompt:
+        description: 'Prompt'
+        required: true
+        type: string
+      model:
+        description: 'Model'
+        required: false
+        type: string
+        default: 'deepseek-v4-flash'
+      clear_history:
+        description: 'Clear history'
+        required: false
+        type: string
+        default: 'false'
+      callback_url:
+        description: 'Callback URL'
+        required: true
+        type: string
+      callback_secret:
+        description: 'Callback secret'
         required: true
         type: string
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "${{ inputs.test }}"
+      - run: echo "${{ inputs.prompt }}"
