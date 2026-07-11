@@ -33,11 +33,11 @@ jobs:
       - name: Run Cline + DeepSeek (auto-approve, no yolo)
         env:
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_BASE_URL: https://api.deepseek.com/v1
         run: |
           echo "=== CLINE + DEEPSEEK AGENT ==="
           echo "Job: ${{ inputs.job_id }}"
           echo "Prompt: ${{ inputs.prompt }}"
-          echo "================================"
 
           cd /tmp/target-repo
 
@@ -45,7 +45,6 @@ jobs:
             -P openai-native \
             -k "$OPENAI_API_KEY" \
             -m deepseek-chat \
-            --base-url https://api.deepseek.com/v1 \
             --auto-approve true
 
           EXIT_CODE=$?
