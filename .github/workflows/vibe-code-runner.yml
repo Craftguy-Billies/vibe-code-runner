@@ -119,15 +119,18 @@ for i,r in enumerate(R[:5]):
           CB_SECRET: ${{ inputs.callback_secret }}
         run: |
           cd /tmp/target-repo
-          # Write prompt to file to avoid bash escaping issues
-          cat > /tmp/prompt.txt << 'PROMPTEOF'
-${{ inputs.prompt }}
-PROMPTEOF
+          python3 -c "
+import os
+prompt = os.environ['PROMPT']
+with open('/tmp/prompt.txt','w') as f:
+    f.write(prompt)
+"
           if [ -f /tmp/web-results.txt ] && [ -s /tmp/web-results.txt ]; then
             cat /tmp/web-results.txt >> /tmp/prompt.txt
           fi
-          MSG=$(cat /tmp/prompt.txt)
-          aider --yes --model "openai/${{ inputs.model }}" --message "$MSG" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+          aider --yes --model "openai/${{ inputs.model }}" --message-file /tmp/prompt.txt --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+        env:
+          PROMPT: ${{ inputs.prompt }}
           python3 << 'PYEOF'
           import urllib.request, json, os, subprocess, re
           cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
