@@ -117,19 +117,9 @@ for i,r in enumerate(R[:5]):
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           CB_URL: ${{ inputs.callback_url }}
           CB_SECRET: ${{ inputs.callback_secret }}
-          PROMPT: ${{ inputs.prompt }}
         run: |
           cd /tmp/target-repo
-          python3 -c "
-import os
-prompt = os.environ['PROMPT']
-with open('/tmp/prompt.txt','w') as f:
-    f.write(prompt)
-"
-          if [ -f /tmp/web-results.txt ] && [ -s /tmp/web-results.txt ]; then
-            cat /tmp/web-results.txt >> /tmp/prompt.txt
-          fi
-          aider --yes --model "openai/${{ inputs.model }}" --message-file /tmp/prompt.txt --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+          aider --yes --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
           python3 << 'PYEOF'
           import urllib.request, json, os, subprocess, re
           cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
