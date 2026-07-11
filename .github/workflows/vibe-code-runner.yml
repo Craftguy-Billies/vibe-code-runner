@@ -91,7 +91,20 @@ jobs:
           CB_SECRET: ${{ inputs.callback_secret }}
         run: |
           cd /tmp/target-repo
+          echo "Model: openai/${{ inputs.model }}"
           aider --yes --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+          AIDER_EXIT=${PIPESTATUS[0]}
+          # Check if Aider actually did anything
+          if [ ${AIDER_EXIT} -ne 0 ]; then
+            echo "AIDER FAILED with exit code ${AIDER_EXIT}"
+            cat /tmp/aider.log | tail -20
+            exit ${AIDER_EXIT}
+          fi
+          if ! grep -qE '(Applied|Created|Modified|Wrote|Edited)' /tmp/aider.log; then
+            echo "AIDER produced no changes - check API connectivity"
+            cat /tmp/aider.log | tail -20
+            exit 1
+          fi
           python3 << 'PYEOF'
           import urllib.request, json, os, subprocess, re
           cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
