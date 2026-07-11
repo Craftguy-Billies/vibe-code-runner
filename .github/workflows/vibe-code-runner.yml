@@ -101,6 +101,7 @@ jobs:
 
       - name: Commit and push changes
         if: steps.changes.outputs.changes_count > 0
+        id: commit
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
@@ -132,9 +133,10 @@ jobs:
         if: steps.changes.outputs.changes_count > 0
         id: pr
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           cd /tmp/target-repo
+          BRANCH_NAME="${{ steps.commit.outputs.branch_name }}"
 
           PR_BODY=$(cat .vibe-agent-result.json | node -e "
             const r = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
@@ -144,10 +146,10 @@ jobs:
 
           PR_URL=$(gh pr create \
             --repo "${{ inputs.repo }}" \
-            --head "vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)" \
+            --head "${BRANCH_NAME}" \
             --base "${{ inputs.branch }}" \
-            --title "🤖 Vibe Code: ${{ inputs.prompt }}" \
-            --body "$(echo "${PR_BODY}")" \
+            --title "Vibe Code: ${{ inputs.prompt }}" \
+            --body "${PR_BODY}" \
             2>&1)
 
           echo "PR URL: ${PR_URL}"
