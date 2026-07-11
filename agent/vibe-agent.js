@@ -132,6 +132,21 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the web for documentation, API references, or solutions. Returns top results with titles, URLs, and snippets. Use this to find current documentation or debug errors.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query. Be specific, e.g. 'React useEffect cleanup function example 2025'." },
+          max_results: { type: "number", description: "Max results (default 5, max 10)." },
+        },
+        required: ["query"],
+      },
+    },
+  },
 ];
 
 // ── Tool implementations ──────────────────────────────────────
@@ -250,6 +265,42 @@ async function toolReplaceInFile(repoDir, { path: filePath, old_str, new_str }) 
   }
 }
 
+async function toolWebSearch({ query, max_results = 5 }) {
+  try {
+    const limit = Math.min(max_results, 10);
+    // Use DuckDuckGo HTML search (free, no API key)
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+      headers: { "User-Agent": "vibe-code-agent/1.0" },
+    });
+    const html = await response.text();
+
+    // Parse results from HTML
+    const results = [];
+    const linkRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
+    const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([^<]*(?:<[^>]*>[^<]*<\/[^>]*>)*[^<]*)<\/a>/g;
+
+    const links = [...html.matchAll(linkRegex)];
+    const snippets = [...html.matchAll(snippetRegex)];
+
+    for (let i = 0; i < Math.min(links.length, limit); i++) {
+      results.push({
+        title: links[i][2].replace(/<[^>]*>/g, "").trim(),
+        url: links[i][1],
+        snippet: snippets[i] ? snippets[i][1].replace(/<[^>]*>/g, "").trim() : "",
+      });
+    }
+
+    if (results.length === 0) {
+      return JSON.stringify({ query, results: [], note: "No results found. Try a different query." });
+    }
+
+    return JSON.stringify({ query, count: results.length, results });
+  } catch (e) {
+    return JSON.stringify({ error: `Web search failed: ${e.message}` });
+  }
+}
+
 // ── Tool dispatcher ───────────────────────────────────────────
 
 async function executeTool(repoDir, toolCall) {
@@ -264,6 +315,7 @@ async function executeTool(repoDir, toolCall) {
     case "execute_command": return toolExecuteCommand(repoDir, args);
     case "search_code": return toolSearchCode(repoDir, args);
     case "replace_in_file": return toolReplaceInFile(repoDir, args);
+    case "web_search": return toolWebSearch(args);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
@@ -283,6 +335,7 @@ You are given a coding task and must complete it fully. Work step by step:
 Rules:
 - Use the EXACT file paths and function signatures that exist in the codebase
 - When writing new files, follow the existing code style and conventions
+- Use web_search to look up documentation, API references, or error solutions when you're unsure
 - Always verify your changes compile/run before declaring done
 - For npm/Node.js projects, npm install before running
 - For Python projects, pip install before running
