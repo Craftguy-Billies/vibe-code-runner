@@ -1,43 +1,15 @@
 name: Vibe Code Runner
-
 on:
   workflow_dispatch:
     inputs:
-      job_id:
-        description: 'Job ID'
-        required: true
-        type: string
-      repo:
-        description: 'Target repo'
-        required: true
-        type: string
-      branch:
-        description: 'Target branch'
-        required: false
-        type: string
-        default: 'main'
-      prompt:
-        description: 'Coding task'
-        required: true
-        type: string
-      model:
-        description: 'DeepSeek model'
-        required: false
-        type: string
-        default: 'deepseek-chat'
-      clear_history:
-        description: 'Clear chat history'
-        required: false
-        type: string
-        default: 'false'
-      callback_url:
-        description: 'Worker callback URL'
-        required: true
-        type: string
-      callback_secret:
-        description: 'Worker secret'
-        required: true
-        type: string
+      job_id: {description: 'Job ID', required: true, type: string}
+      repo: {description: 'Target repo', required: true, type: string}
+      branch: {description: 'Target branch', required: false, type: string, default: 'main'}
+      prompt: {description: 'Coding task', required: true, type: string}
+      model: {description: 'DeepSeek model', required: false, type: string, default: 'deepseek-v4-flash'}
+      clear_history: {description: 'Clear chat history', required: false, type: string, default: 'false'}
+      callback_url: {description: 'Worker callback URL', required: true, type: string}
+      callback_secret: {description: 'Worker secret', required: true, type: string}
 
 jobs:
   vibe-code:
@@ -45,16 +17,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Clone target repo
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+        env: {GH_PAT: '${{ secrets.GH_PAT }}'}
         run: |
           git clone --branch "${{ inputs.branch }}" --single-branch \
             "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
           ls /tmp/target-repo
 
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+        with: {python-version: '3.11'}
 
       - name: Install Aider
         run: pip install aider-chat
@@ -71,8 +41,7 @@ jobs:
           echo "=== WEB SEARCH ==="
           TKEY="${{ secrets.TAVILY_API_KEY }}"
           if [ -n "$TKEY" ]; then
-            curl -s -X POST "https://api.tavily.com/search" \
-              -H "Content-Type: application/json" \
+            curl -s -X POST "https://api.tavily.com/search" -H "Content-Type: application/json" \
               -d "{\"api_key\":\"$TKEY\",\"query\":\"${QUERY}\",\"search_depth\":\"basic\",\"max_results\":5}" \
               | python3 -c "import sys,json; d=json.load(sys.stdin); [print(r['title'],r['url'],r.get('content','')[:200],sep='\n',end='\n\n') for r in d.get('results',[])]" \
               > /tmp/web-results.txt 2>/dev/null
@@ -96,68 +65,33 @@ jobs:
         env:
           OPENAI_API_BASE: https://api.deepseek.com/v1
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          CB_URL: ${{ inputs.callback_url }}
-          CB_SECRET: ${{ inputs.callback_secret }}
+          OPENAI_MAX_TOKENS: 65536
         run: |
           cd /tmp/target-repo
-          echo "Model: openai/${{ inputs.model }}"
-
-          # Set max tokens for DeepSeek (384K max, Aider default is too low)
-          export OPENAI_MAX_TOKENS=65536
-
-          aider --yes --model "openai/${{ inputs.model }}" \
-            --message "${{ inputs.prompt }}" \
-            --no-suggest-shell-commands \
-            --set-env OPENAI_MAX_TOKENS=65536 \
-            2>&1 | tee /tmp/aider.log
+          echo "Model: openai/${{ inputs.model }}  MaxTokens: 65536"
+          aider --yes --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
           AIDER_EXIT=${PIPESTATUS[0]}
-          # Check if Aider actually did anything
-          if [ ${AIDER_EXIT} -ne 0 ]; then
-            echo "AIDER FAILED with exit code ${AIDER_EXIT}"
-            cat /tmp/aider.log | tail -20
-            exit ${AIDER_EXIT}
-          fi
+          echo "Aider exit: ${AIDER_EXIT}"
+
+          # Send progress: last 25 lines of Aider output via curl
+          CB="${{ inputs.callback_url }}"; CS="${{ inputs.callback_secret }}"
+          tail -25 /tmp/aider.log | grep -v '^$' | while IFS= read -r line; do
+            line=$(echo "$line" | tr -d '\n\r' | cut -c1-500)
+            [ ${#line} -lt 5 ] && continue
+            curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
+              -d "{\"type\":\"progress\",\"message\":\"$line\"}" > /dev/null 2>&1 || true
+          done
+
+          # Send diff summary
+          DIFF=$(git diff --stat 2>/dev/null | head -5 | tr '\n' ' ' | cut -c1-500)
+          [ -n "$DIFF" ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
+            -d "{\"type\":\"progress\",\"message\":\"📊 $DIFF\"}" > /dev/null 2>&1 || true
+
+          [ ${AIDER_EXIT} -ne 0 ] && exit ${AIDER_EXIT}
           if ! grep -qE '(Applied|Created|Modified|Wrote|Edited)' /tmp/aider.log; then
-            echo "AIDER produced no changes - check API connectivity"
-            cat /tmp/aider.log | tail -20
+            echo "Aider produced no changes"
             exit 1
           fi
-          python3 << 'PYEOF'
-          import urllib.request, json, os, subprocess, re, sys
-          cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
-          def notify(msg):
-              try:
-                  d = json.dumps({"type":"progress","message":msg[:3000]}).encode()
-                  r = urllib.request.Request(cb, data=d, headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}, method='POST')
-                  resp = urllib.request.urlopen(r, timeout=10)
-                  if resp.status != 200:
-                      print(f'Notify failed: HTTP {resp.status} {resp.read()[:200]}', file=sys.stderr)
-              except Exception as e:
-                  print(f'Notify exception: {e}', file=sys.stderr)
-          with open('/tmp/aider.log') as f:
-              log = re.sub(r'[━┃┏┓┗┛┣┫┳┻╋╭╮╰╯│─▐▌▀▄█]','',f.read())
-          # Send the FULL Aider log as progress (no filtering)
-          # Split into chunks if needed (Telegram limit is 4096 chars per message)
-          clean_log = 'AIDER OUTPUT:\n'
-          for s in log.split('\n'):
-              s = s.strip()
-              if s and len(s) > 3 and not s.startswith('##['):
-                  clean_log += s + '\n'
-
-          # Send in ~3000 char chunks
-          for i in range(0, len(clean_log), 3000):
-              chunk = clean_log[i:i+3000]
-              if chunk.strip():
-                  notify(f'📋 {chunk}')
-
-          r = subprocess.run(['git','diff','--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
-          if r.stdout.strip():
-              notify(f'📊 Diff:\n{r.stdout.strip()[:450]}')
-          r2 = subprocess.run(['git','diff','--name-only'], capture_output=True, text=True, cwd='/tmp/target-repo')
-          if r2.stdout.strip():
-              files = r2.stdout.strip().split('\n')
-              notify(f'📁 Files ({len(files)}):\n' + '\n'.join(f'  o {f}' for f in files[:15]))
-          PYEOF
 
       - name: Check changes
         id: changes
@@ -165,13 +99,12 @@ jobs:
           cd /tmp/target-repo
           CHANGES=$(git status --porcelain | wc -l)
           echo "changes_count=${CHANGES}" >> $GITHUB_OUTPUT
-          if [ "${CHANGES}" -gt 0 ]; then git diff --stat; fi
+          [ "${CHANGES}" -gt 0 ] && git diff --stat
 
       - name: Push changes
         if: steps.changes.outputs.changes_count > 0
         id: commit
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+        env: {GH_PAT: '${{ secrets.GH_PAT }}'}
         run: |
           cd /tmp/target-repo
           B="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
@@ -190,39 +123,33 @@ jobs:
           cd /tmp/target-repo
           npm install -g serve 2>/dev/null || true
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-          PORT=8080
-          nohup serve -l $PORT -s . > /tmp/srv.log 2>&1 &
-          sleep 3
-          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tun.log 2>&1 &
-          sleep 6
+          chmod +x cloudflared; PORT=8080
+          nohup serve -l $PORT -s . > /tmp/srv.log 2>&1 &; sleep 3
+          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tun.log 2>&1 &; sleep 6
           TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tun.log | head -1)
-          if [ -n "$TUNNEL_URL" ]; then
-            echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
-          else
-            echo "preview_url=" >> $GITHUB_OUTPUT
-          fi
+          if [ -n "$TUNNEL_URL" ]; then echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT; echo "LIVE: $TUNNEL_URL"
+          else echo "preview_url=" >> $GITHUB_OUTPUT; fi
 
       - name: Create PR
         if: steps.changes.outputs.changes_count > 0
         id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+        env: {GH_TOKEN: '${{ secrets.GH_PAT }}'}
         run: |
           cd /tmp/target-repo
           BODY="## Aider + DeepSeek\n\n**Prompt:** ${{ inputs.prompt }}"
           PV="${{ steps.preview.outputs.preview_url }}"
-          if [ -n "$PV" ]; then BODY="${BODY}\n\n**Preview:** ${PV}"; fi
+          [ -n "$PV" ] && BODY="${BODY}\n\n**Preview:** ${PV}"
           PR_URL=$(gh pr create --repo "${{ inputs.repo }}" --head "${{ steps.commit.outputs.branch_name }}" --base "${{ inputs.branch }}" --title "Aider: ${{ inputs.prompt }}" --body "$(echo -e "${BODY}")" 2>&1)
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
 
       - name: Notify Done
         if: success()
         run: |
+          SUMMARY=$(tail -15 /tmp/aider.log | grep -v '^$' | tr '\n' ' ' | cut -c1-1000)
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }}}" || true
+            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }},\"summary\":\"${SUMMARY}\"}" || true
 
       - name: Notify Fail
         if: failure()
