@@ -115,34 +115,40 @@ jobs:
             exit 1
           fi
           python3 << 'PYEOF'
-          import urllib.request, json, os, subprocess, re
+          import urllib.request, json, os, subprocess, re, sys
           cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
           def notify(msg):
               try:
-                  d = json.dumps({"type":"progress","message":msg[:550]}).encode()
+                  d = json.dumps({"type":"progress","message":msg[:3000]}).encode()
                   r = urllib.request.Request(cb, data=d, headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}, method='POST')
-                  urllib.request.urlopen(r, timeout=5)
-              except: pass
+                  resp = urllib.request.urlopen(r, timeout=10)
+                  if resp.status != 200:
+                      print(f'Notify failed: HTTP {resp.status} {resp.read()[:200]}', file=sys.stderr)
+              except Exception as e:
+                  print(f'Notify exception: {e}', file=sys.stderr)
           with open('/tmp/aider.log') as f:
               log = re.sub(r'[━┃┏┓┗┛┣┫┳┻╋╭╮╰╯│─▐▌▀▄█]','',f.read())
-          # Send every meaningful line from Aider output (max 25)
-          sent = 0
+          # Send the FULL Aider log as progress (no filtering)
+          # Split into chunks if needed (Telegram limit is 4096 chars per message)
+          clean_log = 'AIDER OUTPUT:\n'
           for s in log.split('\n'):
               s = s.strip()
-              if not s or len(s) < 8: continue
-              if s.startswith('    ') or s.startswith('Traceback'): continue
-              if 'File "' in s and 'line' in s: continue  # stack traces
-              if s.startswith(('202','203','204','205')): continue  # timestamps
-              notify(s[:550])
-              sent += 1
-              if sent >= 25: break
+              if s and len(s) > 3 and not s.startswith('##['):
+                  clean_log += s + '\n'
+
+          # Send in ~3000 char chunks
+          for i in range(0, len(clean_log), 3000):
+              chunk = clean_log[i:i+3000]
+              if chunk.strip():
+                  notify(f'📋 {chunk}')
+
           r = subprocess.run(['git','diff','--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r.stdout.strip():
-              notify(f"📊 Diff:\n{r.stdout.strip()[:450]}")
+              notify(f'📊 Diff:\n{r.stdout.strip()[:450]}')
           r2 = subprocess.run(['git','diff','--name-only'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r2.stdout.strip():
               files = r2.stdout.strip().split('\n')
-              notify(f"📁 Files ({len(files)}):\n" + '\n'.join(f'  o {f}' for f in files[:15]))
+              notify(f'📁 Files ({len(files)}):\n' + '\n'.join(f'  o {f}' for f in files[:15]))
           PYEOF
 
       - name: Check changes
