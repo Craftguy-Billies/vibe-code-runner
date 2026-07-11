@@ -24,33 +24,30 @@ jobs:
           echo "Target repo ready"
           ls -la /tmp/target-repo
 
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
 
-      - name: Install Cline CLI
-        run: npm install -g cline
+      - name: Install Aider
+        run: pip install aider-chat
 
-      - name: Run Cline + DeepSeek (auto-approve, no yolo)
+      - name: Run Aider + DeepSeek
         env:
+          OPENAI_API_BASE: https://api.deepseek.com/v1
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          OPENAI_BASE_URL: https://api.deepseek.com/v1
         run: |
-          echo "=== CLINE + DEEPSEEK AGENT ==="
+          echo "=== AIDER + DEEPSEEK ==="
           echo "Job: ${{ inputs.job_id }}"
           echo "Prompt: ${{ inputs.prompt }}"
 
           cd /tmp/target-repo
 
-          echo "${{ inputs.prompt }}" | cline \
-            -P openai-native \
-            -k "$OPENAI_API_KEY" \
-            -m deepseek-chat \
-            --auto-approve true
+          aider \
+            --yes \
+            --model openai/deepseek-chat \
+            --message "${{ inputs.prompt }}" \
+            --no-suggest-shell-commands
 
-          EXIT_CODE=$?
-          echo ""
-          echo "Cline exit code: ${EXIT_CODE}"
-          echo "cline_exit_code=${EXIT_CODE}" >> /tmp/cline-result.env
+          echo "Aider exit: $?"
 
       - name: Check changes
         id: changes
@@ -59,7 +56,10 @@ jobs:
           git status --porcelain
           CHANGES=$(git status --porcelain | wc -l)
           echo "changes_count=${CHANGES}" >> $GITHUB_OUTPUT
-          if [ "${CHANGES}" -gt 0 ]; then git diff --stat; fi
+          if [ "${CHANGES}" -gt 0 ]; then
+            echo "=== Changes ==="
+            git diff --stat
+          fi
 
       - name: Start Live Preview (Cloudflare Tunnel)
         id: preview
@@ -73,6 +73,9 @@ jobs:
             (grep -q '"dev"' package.json && npm run dev -- --port $PORT --host 0.0.0.0 &) || \
             (grep -q '"start"' package.json && PORT=$PORT npm start &) || \
             (npx serve -l $PORT -s . &)
+          elif [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt --quiet 2>/dev/null || true
+            python -m http.server $PORT &
           else
             npx serve -l $PORT -s . &
           fi
@@ -82,13 +85,13 @@ jobs:
           TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
           if [ -n "$TUNNEL_URL" ]; then
             echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
-            echo "Live Preview: $TUNNEL_URL"
+            echo "LIVE: $TUNNEL_URL"
             echo "$TUNNEL_URL" > /tmp/target-repo/.vibe-preview-url
           else
             echo "preview_url=" >> $GITHUB_OUTPUT
           fi
 
-      - name: Commit and push
+      - name: Push changes
         if: steps.changes.outputs.changes_count > 0
         id: commit
         env: { GH_PAT: '${{ secrets.GH_PAT }}' }
@@ -99,7 +102,7 @@ jobs:
           git config user.name "Vibe Code Bot"
           git config user.email "vibe-code-bot@users.noreply.github.com"
           git add -A
-          git commit -m "Vibe Code: ${{ inputs.prompt }}"
+          git commit -m "Aider: ${{ inputs.prompt }}" || echo "No changes to commit"
           git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$BRANCH"
           echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
 
@@ -108,26 +111,19 @@ jobs:
         id: pr
         env: { GH_TOKEN: '${{ secrets.GH_PAT }}' }
         run: |
-          cd /tmp/target-repo
           PREVIEW_URL="${{ steps.preview.outputs.preview_url }}"
-          BODY="## Vibe Code Bot
+          BODY="## Aider + DeepSeek
 
-          Prompt: ${{ inputs.prompt }}
-
-          Built with Cline + DeepSeek API"
-
+          **Prompt:** ${{ inputs.prompt }}"
           if [ -n "$PREVIEW_URL" ]; then
             BODY="${BODY}
 
-          Live Preview: ${PREVIEW_URL}
-          (temporary, ~2 min)"
+          **Live Preview:** ${PREVIEW_URL} (temporary)"
           fi
-
-          PR_URL=$(gh pr create \
-            --repo "${{ inputs.repo }}" \
+          PR_URL=$(gh pr create --repo "${{ inputs.repo }}" \
             --head "${{ steps.commit.outputs.branch_name }}" \
             --base "${{ inputs.branch }}" \
-            --title "Vibe Code: ${{ inputs.prompt }}" \
+            --title "Aider: ${{ inputs.prompt }}" \
             --body "${BODY}" 2>&1)
           echo "PR: ${PR_URL}"
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
@@ -138,7 +134,7 @@ jobs:
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d "{\"success\":true,\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"summary\":\"Completed with Cline + DeepSeek\"}" || true
+            -d "{\"success\":true,\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"summary\":\"Aider + DeepSeek completed\"}" || true
 
       - name: Notify Worker - Fail
         if: failure()
@@ -146,7 +142,7 @@ jobs:
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d '{"success":false,"error":"Workflow failed"}' || true
+            -d '{"success":false,"error":"Aider workflow failed"}' || true
 
       - name: Hold Preview
         if: success() && steps.preview.outputs.preview_url != ''
