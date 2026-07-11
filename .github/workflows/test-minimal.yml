@@ -38,7 +38,9 @@ on:
         required: true
         type: string
 jobs:
-  test:
+  vibe-code:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - run: echo "${{ inputs.prompt }}"
+
