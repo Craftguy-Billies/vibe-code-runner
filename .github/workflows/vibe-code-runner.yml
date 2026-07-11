@@ -43,7 +43,39 @@ jobs:
         run: |
           cd /tmp/target-repo
           rm -f .aider.chat.history.md .aider.input.history
-          echo "Aider history cleared for fresh conversation"
+          echo "Aider history cleared"
+
+      - name: Web Search (pre-Aider context)
+        id: websearch
+        run: |
+          cd /tmp/target-repo
+          # Extract searchable keywords from prompt (take first 200 chars, remove code-specific noise)
+          QUERY="${{ inputs.prompt }}"
+          echo "Searching: ${QUERY:0:200}"
+
+          # DuckDuckGo HTML search (free, no API key)
+          SEARCH_RESULTS=$(curl -s "https://html.duckduckgo.com/html/?q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")" \
+            -H "User-Agent: vibe-code-bot/1.0" | python3 -c "
+          import sys, re, html
+          text = sys.stdin.read()
+          results = []
+          for m in re.finditer(r'<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>', text):
+              results.append({'url': m.group(1), 'title': html.unescape(m.group(2).strip())})
+          # Also get snippets
+          snippets = re.findall(r'<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>', text)
+          for i, s in enumerate(snippets[:len(results)]):
+              results[i]['snippet'] = html.unescape(re.sub(r'<[^>]+>', '', s)).strip()
+          for i, r in enumerate(results[:5]):
+              print(f'{i+1}. {r[\"title\"]}\n   {r[\"url\"]}\n   {r.get(\"snippet\",\"\")[:200]}\n')
+          " 2>&1)
+
+          if [ -n "$SEARCH_RESULTS" ]; then
+            echo "$SEARCH_RESULTS" > /tmp/web-results.txt
+            echo "Found web results:"
+            cat /tmp/web-results.txt
+          else
+            echo "(no web results found)"
+          fi
 
       - name: Run Aider + DeepSeek
         id: aider
@@ -55,7 +87,13 @@ jobs:
         run: |
           cd /tmp/target-repo
 
-          aider --yes --model openai/${{ inputs.model }} --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+          # Build enhanced prompt with web search results
+          ENHANCED_PROMPT="${{ inputs.prompt }}"
+          if [ -f /tmp/web-results.txt ] && [ -s /tmp/web-results.txt ]; then
+            ENHANCED_PROMPT="${ENHANCED_PROMPT}\n\nRecent web search results that may help:\n$(cat /tmp/web-results.txt)"
+          fi
+
+          aider --yes --model openai/${{ inputs.model }} --message "$ENHANCED_PROMPT" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
 
           echo "=== SENDING FULL AIDER OUTPUT AS PROGRESS ==="
           python3 << 'PYEOF'
