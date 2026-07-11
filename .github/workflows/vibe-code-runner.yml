@@ -145,11 +145,19 @@ jobs:
       - name: Notify Done
         if: success()
         run: |
-          SUMMARY=$(tail -15 /tmp/aider.log | grep -v '^$' | tr '\n' ' ' | cut -c1-1000)
-          curl -s -X POST "${{ inputs.callback_url }}" \
+          # Build summary from Aider chat history + output
+          SUMMARY=""
+          if [ -f /tmp/target-repo/.aider.chat.history.md ]; then
+            SUMMARY=$(tail -30 /tmp/target-repo/.aider.chat.history.md | tr '\n' ' ' | cut -c1-1000)
+          fi
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY=$(tail -15 /tmp/aider.log | grep -v '^$' | tr '\n' ' ' | cut -c1-1000)
+          fi
+          echo "Sending completion to ${{ inputs.callback_url }}"
+          curl -v -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }},\"summary\":\"${SUMMARY}\"}" || true
+            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }},\"summary\":\"${SUMMARY}\"}" 2>&1 || true
 
       - name: Notify Fail
         if: failure()
