@@ -30,7 +30,15 @@ jobs:
       - name: Install Aider
         run: pip install aider-chat
 
-      - name: Run Aider + DeepSeek
+      - name: Notify Worker - Job Started
+        run: |
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"started","message":"Aider is analyzing your repo..."}' || true
+
+      - name: Run Aider + DeepSeek (with progress capture)
+        id: aider
         env:
           OPENAI_API_BASE: https://api.deepseek.com/v1
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -38,28 +46,97 @@ jobs:
           echo "=== AIDER + DEEPSEEK ==="
           echo "Job: ${{ inputs.job_id }}"
           echo "Prompt: ${{ inputs.prompt }}"
+          echo "========================="
 
           cd /tmp/target-repo
 
+          # Run Aider and capture output to log
           aider \
             --yes \
             --model openai/deepseek-chat \
             --message "${{ inputs.prompt }}" \
-            --no-suggest-shell-commands
+            --no-suggest-shell-commands \
+            2>&1 | tee /tmp/aider-output.log
 
-          echo "Aider exit: $?"
+          AIDER_EXIT=${PIPESTATUS[0]}
+          echo "aider_exit=${AIDER_EXIT}"
+
+          # Send progress: what files were changed
+          echo ""
+          echo "=== CHANGES ==="
+          git diff --stat 2>/dev/null || echo "(no changes yet)"
+
+          # Parse Aider output for key events and send as progress
+          python3 << 'PYEOF'
+          import urllib.request, json, os, re
+
+          callback_url = os.environ['CALLBACK_URL']
+          callback_secret = os.environ['CALLBACK_SECRET']
+
+          def notify(msg, file_count=0):
+              data = json.dumps({"type":"progress","message":msg,"file_count":file_count}).encode()
+              req = urllib.request.Request(callback_url,
+                  data=data,
+                  headers={'Authorization': f'Bearer {callback_secret}', 'Content-Type': 'application/json'},
+                  method='POST')
+              try: urllib.request.urlopen(req, timeout=5)
+              except: pass
+
+          with open('/tmp/aider-output.log') as f:
+              log = f.read()
+
+          lines = log.split('\n')
+          for line in lines:
+              line = line.strip()
+              if not line: continue
+              # Capture planning
+              if 'scraping' in line.lower() or 'repo-map' in line.lower():
+                  notify(f"🔍 {line[:200]}")
+              elif 'Creating new file' in line or 'Created' in line and '.py' in line or '.js' in line or '.html' in line or '.css' in line:
+                  notify(f"📄 {line[:200]}")
+              elif 'Applied edit to' in line:
+                  notify(f"✏️ {line[:200]}")
+              elif 'Ran ' in line:
+                  notify(f"🧪 {line[:200]}")
+              elif 'Failed' in line or 'Error' in line or 'error' in line:
+                  notify(f"⚠️ {line[:200]}")
+
+          # Send file summary
+          import subprocess
+          result = subprocess.run(['git', 'diff', '--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
+          if result.stdout.strip():
+              notify(f"📊 Files changed:\n{result.stdout.strip()[:500]}")
+          PYEOF
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ inputs.callback_secret }}
 
       - name: Check changes
         id: changes
         run: |
           cd /tmp/target-repo
-          git status --porcelain
           CHANGES=$(git status --porcelain | wc -l)
           echo "changes_count=${CHANGES}" >> $GITHUB_OUTPUT
           if [ "${CHANGES}" -gt 0 ]; then
-            echo "=== Changes ==="
+            echo "=== ${CHANGES} changed files ==="
             git diff --stat
           fi
+
+      - name: Push changes
+        if: steps.changes.outputs.changes_count > 0
+        id: commit
+        env: { GH_PAT: '${{ secrets.GH_PAT }}' }
+        run: |
+          cd /tmp/target-repo
+          BRANCH="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git config user.name "Vibe Code Bot"
+          git config user.email "vibe-code-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "Aider: ${{ inputs.prompt }}" || echo "(no changes)"
+          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$BRANCH"
+          echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
+          echo "Pushed: $BRANCH"
 
       - name: Start Live Preview (Cloudflare Tunnel)
         id: preview
@@ -86,31 +163,16 @@ jobs:
           if [ -n "$TUNNEL_URL" ]; then
             echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
             echo "LIVE: $TUNNEL_URL"
-            echo "$TUNNEL_URL" > /tmp/target-repo/.vibe-preview-url
           else
             echo "preview_url=" >> $GITHUB_OUTPUT
           fi
-
-      - name: Push changes
-        if: steps.changes.outputs.changes_count > 0
-        id: commit
-        env: { GH_PAT: '${{ secrets.GH_PAT }}' }
-        run: |
-          cd /tmp/target-repo
-          BRANCH="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
-          git checkout -b "$BRANCH"
-          git config user.name "Vibe Code Bot"
-          git config user.email "vibe-code-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "Aider: ${{ inputs.prompt }}" || echo "No changes to commit"
-          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$BRANCH"
-          echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
 
       - name: Create Pull Request
         if: steps.changes.outputs.changes_count > 0
         id: pr
         env: { GH_TOKEN: '${{ secrets.GH_PAT }}' }
         run: |
+          cd /tmp/target-repo
           PREVIEW_URL="${{ steps.preview.outputs.preview_url }}"
           BODY="## Aider + DeepSeek
 
@@ -128,13 +190,13 @@ jobs:
           echo "PR: ${PR_URL}"
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
 
-      - name: Notify Worker
+      - name: Notify Worker - Done
         if: success()
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d "{\"success\":true,\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"summary\":\"Aider + DeepSeek completed\"}" || true
+            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }}}" || true
 
       - name: Notify Worker - Fail
         if: failure()
@@ -142,7 +204,7 @@ jobs:
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d '{"success":false,"error":"Aider workflow failed"}' || true
+            -d '{"type":"failed","message":"Aider workflow failed. Check run logs."}' || true
 
       - name: Hold Preview
         if: success() && steps.preview.outputs.preview_url != ''
