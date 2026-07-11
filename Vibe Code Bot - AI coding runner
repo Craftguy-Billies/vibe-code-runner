@@ -1,0 +1,13 @@
+
+The README is extremely minimal – only a title and a one‑line subtitle. It does not include:
+
+- Installation instructions
+- Environment variables needed (`DEEPSEEK_API_KEY`)
+- Usage examples (command line flags)
+- Dependencies or setup steps
+- License or contribution guidelines
+
+**Impact**: Users unfamiliar with the codebase would not be able to run or understand the agent from the README alone. The agent script itself is better documented internally (via comments).
+
+## Architecture Diagram (Conceptual)
+
