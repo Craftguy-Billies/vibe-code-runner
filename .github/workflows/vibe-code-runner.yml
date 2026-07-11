@@ -45,7 +45,7 @@ jobs:
             -P openai-native \
             -k "$OPENAI_API_KEY" \
             -m deepseek-chat \
-            --baseurl https://api.deepseek.com/v1 \
+            --base-url https://api.deepseek.com/v1 \
             --auto-approve true
 
           EXIT_CODE=$?
