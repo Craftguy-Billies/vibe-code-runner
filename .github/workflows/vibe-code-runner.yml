@@ -68,26 +68,12 @@ jobs:
       - name: Web Search
         run: |
           QUERY="${{ inputs.prompt }}"
-          echo "=== WEB SEARCH (DuckDuckGo) ==="
-          python3 -c "
-import urllib.request, urllib.parse, re, html as h, sys
-q = sys.argv[1][:200]
-url = 'https://html.duckduckgo.com/html/?q=' + urllib.parse.quote(q)
-req = urllib.request.Request(url, headers={'User-Agent': 'vibe-code-bot/1.0'})
-t = urllib.request.urlopen(req, timeout=10).read().decode()
-R = []
-for m in re.finditer(r'<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>', t):
-    R.append({'u': m.group(1), 't': h.unescape(m.group(2).strip())})
-S = re.findall(r'<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>', t)
-for i, s in enumerate(S[:len(R)]):
-    R[i]['s'] = h.unescape(re.sub(r'<[^>]+>', '', s)).strip()[:200]
-for i, r in enumerate(R[:5]):
-    print(f\"{i+1}. {r['t']}\")
-    print(f\"   {r['u']}\")
-    print(f\"   {r.get('s','')}\")
-    print()
-" "$QUERY" > /tmp/web-results.txt 2>/dev/null
-          echo "=== WEB RESULTS ==="
+          echo "=== WEB SEARCH ==="
+          ENC_Q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
+          curl -sL "https://html.duckduckgo.com/html/?q=${ENC_Q}" -H "User-Agent: vibe-code-bot/1.0" > /tmp/ddg.html
+          grep -oP '<a[^>]*class="result__a"[^>]*href="[^"]*"[^>]*>[^<]+</a>' /tmp/ddg.html | head -10 > /tmp/web-results.txt 2>/dev/null
+          grep -oP '<a[^>]*class="result__snippet"[^>]*>\K.*?(?=</a>)' /tmp/ddg.html | head -10 >> /tmp/web-results.txt 2>/dev/null
+          echo "=== RESULTS ==="
           cat /tmp/web-results.txt 2>/dev/null || echo "(none)"
 
       - name: Notify Started
