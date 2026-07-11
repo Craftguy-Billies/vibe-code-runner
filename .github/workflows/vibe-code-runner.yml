@@ -7,6 +7,7 @@ on:
       repo: { required: true, type: string }
       branch: { required: false, type: string, default: 'main' }
       prompt: { required: true, type: string }
+      model: { required: false, type: string, default: 'deepseek-v4-flash' }
       callback_url: { required: true, type: string }
       callback_secret: { required: true, type: string }
 
@@ -55,7 +56,7 @@ jobs:
           # Run Aider and capture output to log
           aider \
             --yes \
-            --model openai/deepseek-chat \
+            --model openai/${{ inputs.model }} \
             --message "${{ inputs.prompt }}" \
             --no-suggest-shell-commands \
             2>&1 | tee /tmp/aider-output.log
