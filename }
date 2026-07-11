@@ -1,0 +1,36 @@
+
+- The project is an ES module (`"type": "module"`).
+- The only runtime dependency is the `openai` SDK, used to call the DeepSeek API (via a custom base URL).
+- No test, build, or linting scripts are defined.
+
+### `agent/vibe-agent.js`
+
+The main agent script (~570 lines). Key components:
+
+1. **CLI Argument Parsing**  
+   Accepts `--prompt`, `--repo-dir`, and `--max-iters`.
+
+2. **DeepSeek Client**  
+   Configured with `baseURL: "https://api.deepseek.com"` and an API key read from `DEEPSEEK_API_KEY`.
+
+3. **Tool Definitions (7 tools)**  
+   Each tool is described by a JSON schema and implemented by a corresponding `tool*` function:
+   - `list_directory` – list files/dirs (excludes `.git` and `node_modules`)
+   - `read_file` – read with line numbers, truncates at 500 lines
+   - `write_file` – write (overwrites) file, creates parent directories
+   - `execute_command` – run a shell command (timeout up to 5 min)
+   - `search_code` – grep based pattern search
+   - `replace_in_file` – exact text replacement (first occurrence)
+   - `web_search` – scrape DuckDuckGo HTML results
+
+4. **System Prompt**  
+   Instructs the agent to explore, plan, implement, verify, and signal completion with `✅ DONE:`.
+
+5. **Agent Loop**  
+   Calls the DeepSeek Chat API with `tools`, executes any tool calls, and repeats up to `maxIters` times. Handles rate limiting (HTTP 429) by sleeping 5 seconds.
+
+6. **Result Output**  
+   Writes a `.vibe-agent-result.json` file with a summary and a PR description.
+
+### `README.md`
+

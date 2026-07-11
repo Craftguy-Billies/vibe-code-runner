@@ -1,0 +1,41 @@
+
+## Security & Robustness Observations
+
+### 1. Command Injection (High Severity)
+`toolExecuteCommand` passes the user‑supplied `command` directly to `exec`. A malicious prompt could ask the agent to run `rm -rf /`. Although the agent is designed to be used only in trusted environments, this is a clear injection vector.
+
+### 2. Path Traversal (Medium Severity)
+`toolReadFile`, `toolWriteFile`, and `toolListDirectory` resolve paths relative to `repoDir` but do **not** verify the resulting path stays inside the intended directory. A carefully crafted path (`../sensitive_file`) could escape the sandbox.
+
+### 3. Unchecked Overwrites (Medium Severity)
+`toolWriteFile` silently overwrites any existing file. An accidental agent action could destroy critical configuration files (`.git/config`, `package.json`, etc.) without confirmation.
+
+### 4. Large Input Handling (Low Severity)
+`read_file` truncates at 500 lines, but the internal `Buffer.from(content).byteLength` is used only for logging. Very large write operations could exhaust memory. No chunking is implemented.
+
+### 5. Web Search Fragility (Low Severity)
+The DuckDuckGo HTML parser relies on specific class names (`result__a`, `result__snippet`). Site redesigns will break the search functionality without any fallback.
+
+### 6. Timeout Limits (Low Severity)
+Shell commands are capped at 5 minutes. While reasonable for most tasks, long‑running builds or tests may be interrupted prematurely.
+
+### 7. Undocumented Interface (Low Severity)
+The README lacks any usage guidance, making the project inaccessible to new users and increasing the likelihood of misconfiguration.
+
+## Recommendations
+
+- **Sanitise commands**: Use `child_process.spawn` with an argument array instead of `exec`. Alternatively, restrict the allowed commands to a predefined whitelist (e.g., `npm`, `git`, `node`, `python`).
+- **Validate paths**: Resolve the absolute path and confirm it starts with `repoDir` before any file operation.
+- **Add confirmation hooks**: For destructive operations (`write_file`, `replace_in_file`, `execute_command` with dangerous commands), request explicit user approval when running interactively.
+- **Improve web search**: Replace HTML scraping with a stable API (e.g., Bing Web Search API, Google Custom Search, or a self‑hosted SearXNG instance).
+- **Increase logging**: Include the full stderr output (truncation at 5k may hide error details) and log the exit code of every command.
+- **Expand grep file patterns**: Support modern web‑framework extensions (`.vue`, `.svelte`, `.astro`, `.mjs`, `.cjs`).
+- **Expand README**: Add installation steps, environment variable reference, CLI usage examples, and a basic “quick start” guide.
+
+## Next Steps
+
+To deepen the analysis, the following files would be valuable:
+- Contents of the GitHub workflow files (`.github/workflows/*.yml`) – these were summarised as read‑only but not shared in the chat.
+- Any configuration files that the agent may modify (e.g., `jest.config.js`, `tsconfig.json`).
+
+If you supply those files, I can update this report accordingly.
