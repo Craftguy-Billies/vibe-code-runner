@@ -86,6 +86,59 @@ jobs:
             cat /tmp/target-repo/.vibe-agent-result.json
           fi
 
+      - name: Start Live Preview (Cloudflare Tunnel)
+        id: preview
+        run: |
+          cd /tmp/target-repo
+
+          # Install cloudflared
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+
+          # Detect app type and start dev server
+          PORT=8080
+          if [ -f "package.json" ]; then
+            echo "Node.js project detected"
+            if grep -q '"dev"' package.json 2>/dev/null; then
+              npm install --silent 2>/dev/null || true
+              npm run dev -- --port $PORT --host 0.0.0.0 &
+            elif grep -q '"start"' package.json 2>/dev/null; then
+              npm install --silent 2>/dev/null || true
+              PORT=$PORT npm start &
+            else
+              npx serve -l $PORT -s . &
+            fi
+          elif [ -f "index.html" ]; then
+            echo "Static site detected"
+            npx serve -l $PORT -s . &
+          elif [ -f "requirements.txt" ]; then
+            echo "Python project detected"
+            pip install -r requirements.txt --quiet 2>/dev/null || true
+            python -m http.server $PORT &
+          else
+            # Generic: serve the whole directory
+            npx serve -l $PORT -s . &
+          fi
+
+          sleep 3
+
+          # Start Cloudflare Tunnel
+          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tunnel.log 2>&1 &
+          sleep 5
+
+          # Extract the tunnel URL
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "🔗 Live Preview: $TUNNEL_URL"
+            echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+            # Save for PR description
+            echo "$TUNNEL_URL" > /tmp/target-repo/.vibe-preview-url
+          else
+            echo "⚠️ Could not extract tunnel URL. Tunnel log:"
+            cat /tmp/tunnel.log
+            echo "preview_url=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Check for changes
         id: changes
         run: |
@@ -138,10 +191,16 @@ jobs:
           cd /tmp/target-repo
           BRANCH_NAME="${{ steps.commit.outputs.branch_name }}"
 
+          PREVIEW_URL="${{ steps.preview.outputs.preview_url }}"
           PR_BODY=$(cat .vibe-agent-result.json | node -e "
             const r = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
             const desc = r.prDescription || r.summary || '';
-            console.log(desc.substring(0, 5000));
+            const preview = '${PREVIEW_URL}';
+            let body = desc.substring(0, 5000);
+            if (preview) {
+              body += '\n\n## Live Preview\n' + preview + '\n_(temporary URL, valid for a few minutes)_';
+            }
+            console.log(body);
           " 2>/dev/null || echo "AI-generated changes for: ${{ inputs.prompt }}")
 
           PR_URL=$(gh pr create \
@@ -159,10 +218,14 @@ jobs:
         if: success()
         run: |
           PR_URL="${{ steps.pr.outputs.pr_url }}"
+          PREVIEW_URL="${{ steps.preview.outputs.preview_url }}"
           if [ -f /tmp/target-repo/.vibe-agent-result.json ]; then
             SUMMARY=$(node -e "const r=require('/tmp/target-repo/.vibe-agent-result.json'); console.log(r.summary?.substring(0,2000) || '')" 2>/dev/null || echo "Task completed")
           else
             SUMMARY="Task completed successfully"
+          fi
+          if [ -n "$PREVIEW_URL" ]; then
+            SUMMARY="${SUMMARY}\n\nLive Preview: ${PREVIEW_URL}"
           fi
 
           curl -s -X POST "${{ inputs.callback_url }}" \
@@ -172,9 +235,10 @@ jobs:
               console.log(JSON.stringify({
                 success: true,
                 pr_url: '${PR_URL}',
+                preview_url: '${PREVIEW_URL}',
                 summary: process.env.SUMMARY
               }))
-            " 2>/dev/null || echo "{\"success\":true,\"pr_url\":\"\",\"summary\":\"${SUMMARY}\"}")" \
+            " 2>/dev/null || echo "{\"success\":true,\"pr_url\":\"\",\"preview_url\":\"\",\"summary\":\"${SUMMARY}\"}")" \
             || echo "Failed to notify worker (non-critical)"
 
       - name: Notify Worker - Failure
