@@ -42,5 +42,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - run: echo "${{ inputs.prompt }}"
+      - name: Clone target repo
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git clone --branch "${{ inputs.branch }}" --single-branch \
+            "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
+          ls /tmp/target-repo
+
 
