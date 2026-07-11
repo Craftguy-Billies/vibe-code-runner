@@ -64,3 +64,42 @@ jobs:
         run: |
           cd /tmp/target-repo
           rm -f .aider.chat.history.md .aider.input.history
+
+      - name: Web Search
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          QUERY="${{ inputs.prompt }}"
+          echo "=== WEB SEARCH ==="
+          SEARCH_RESULTS=""
+          if [ -n "$TAVILY_API_KEY" ]; then
+            TAVILY_RESP=$(curl -s -X POST "https://api.tavily.com/search" \
+              -H "Content-Type: application/json" \
+              -d "{\"api_key\":\"$TAVILY_API_KEY\",\"query\":\"$QUERY\",\"search_depth\":\"basic\",\"max_results\":5}" 2>&1)
+            SEARCH_RESULTS=$(echo "$TAVILY_RESP" | python3 -c "
+import sys,json
+d = json.load(sys.stdin)
+for i,r in enumerate(d.get('results',[])[:5]):
+    print(f'{i+1}. {r.get(\"title\",\"\")}\n   {r.get(\"url\",\"\")}\n   {r.get(\"content\",\"\")[:200]}\n')
+" 2>/dev/null)
+          fi
+          if [ -z "$SEARCH_RESULTS" ]; then
+            ENC_Q=$(echo "$QUERY" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
+            SEARCH_RESULTS=$(curl -s "https://html.duckduckgo.com/html/?q=$ENC_Q" \
+              -H "User-Agent: vibe-code-bot/1.0" | python3 -c "
+import sys,re,html as h
+t=sys.stdin.read()
+R=[]
+for m in re.finditer(r'<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>',t):
+    R.append({'u':m.group(1),'t':h.unescape(m.group(2).strip())})
+S=re.findall(r'<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>',t)
+for i,s in enumerate(S[:len(R)]):
+    R[i]['s']=h.unescape(re.sub(r'<[^>]+>','',s)).strip()
+for i,r in enumerate(R[:5]):
+    print(f'{i+1}. {r[\"t\"]}\n   {r[\"u\"]}\n   {r.get(\"s\",\"\")[:200]}\n')
+")
+          fi
+          if [ -n "$SEARCH_RESULTS" ]; then
+            echo "$SEARCH_RESULTS" > /tmp/web-results.txt
+            cat /tmp/web-results.txt
+          fi
