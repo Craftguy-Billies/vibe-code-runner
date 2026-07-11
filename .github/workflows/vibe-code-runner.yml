@@ -69,7 +69,7 @@ jobs:
         run: |
           cd /tmp/target-repo
           echo "Model: openai/${{ inputs.model }}  MaxTokens: 65536"
-          aider --yes --auto-add --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+          aider --yes-always --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
           AIDER_EXIT=${PIPESTATUS[0]}
           echo "Aider exit: ${AIDER_EXIT}"
 
