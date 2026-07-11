@@ -22,8 +22,7 @@ jobs:
         run: |
           git clone --branch "${{ inputs.branch }}" --single-branch \
             "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
-          echo "Target repo ready"
-          ls -la /tmp/target-repo
+          ls /tmp/target-repo
 
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
@@ -31,98 +30,62 @@ jobs:
       - name: Install Aider
         run: pip install aider-chat
 
-      - name: Notify Worker - Job Started
+      - name: Notify - Started
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d '{"type":"started","message":"Aider is analyzing your repo and planning changes..."}' || true
+            -d "{\"type\":\"started\",\"message\":\"Aider (${{ inputs.model }}) is analyzing your repo...\"}" || true
 
-      - name: Run Aider + DeepSeek (with progress capture)
+      - name: Run Aider + DeepSeek
         id: aider
         env:
           OPENAI_API_BASE: https://api.deepseek.com/v1
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          CALLBACK_URL: ${{ inputs.callback_url }}
-          CALLBACK_SECRET: ${{ inputs.callback_secret }}
+          CB_URL: ${{ inputs.callback_url }}
+          CB_SECRET: ${{ inputs.callback_secret }}
         run: |
-          echo "=== AIDER + DEEPSEEK ==="
-          echo "Job: ${{ inputs.job_id }}"
-          echo "Prompt: ${{ inputs.prompt }}"
-          echo "Model: ${{ inputs.model }}"
-          echo "========================="
-
           cd /tmp/target-repo
 
-          # Run Aider and capture EVERYTHING
-          aider \
-            --yes \
-            --model openai/${{ inputs.model }} \
-            --message "${{ inputs.prompt }}" \
-            --no-suggest-shell-commands \
-            2>&1 | tee /tmp/aider-output.log
+          aider --yes --model openai/${{ inputs.model }} --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
 
-          AIDER_EXIT=${PIPESTATUS[0]}
-          echo "aider_exit=${AIDER_EXIT}" >> /tmp/aider-result.env
-
-          # Send progress: Aider output summary + file changes
+          echo "=== PARSING AIDER OUTPUT ==="
           python3 << 'PYEOF'
           import urllib.request, json, os, subprocess
-
-          cb = os.environ['CALLBACK_URL']
-          cs = os.environ['CALLBACK_SECRET']
-
+          cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
           def notify(msg):
               try:
-                  data = json.dumps({"type":"progress","message":msg}).encode()
-                  req = urllib.request.Request(cb, data=data,
-                      headers={'Authorization': f'Bearer {cs}', 'Content-Type': 'application/json'}, method='POST')
-                  urllib.request.urlopen(req, timeout=5)
+                  d = json.dumps({"type":"progress","message":msg[:400]}).encode()
+                  r = urllib.request.Request(cb, data=d, headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}, method='POST')
+                  urllib.request.urlopen(r, timeout=5)
               except: pass
 
-          # Read Aider log and extract key lines
-          with open('/tmp/aider-output.log') as f:
+          with open('/tmp/aider.log') as f:
               log = f.read()
 
-          lines = log.split('\n')
-          key_lines = []
-          keywords = ['Creating', 'Created', 'Applied', 'Edited', 'Wrote', 'Modified',
-                      'scraping', 'repo-map', 'plan', 'Plan', 'Ran ', 'error', 'Error',
-                      'Failed', 'Warning', 'diff', 'Diff', 'commit', 'Commit',
-                      'file', 'File', 'test', 'Test', 'model', 'token']
-
-          for line in lines:
+          # Send key lines from Aider output
+          sent = 0
+          for line in log.split('\n'):
               s = line.strip()
-              if not s or len(s) < 5: continue
-              # Skip pure framework/timing noise
-              if any(skip in s for skip in ['Traceback', 'File "', '  File ', '    ']): continue
-              # Capture lines with key action words
-              for kw in keywords:
-                  if kw in s:
-                      key_lines.append(s[:250])
-                      break
+              if not s or len(s) < 10: continue
+              if any(skip in s for skip in ['Traceback','  File "','    ','━━','╭','│','╰','▐']): continue
+              keywords = ['Creating','Created','Applied','Edited','Wrote','Modified','scraping',
+                          'repo-map','plan','Ran','error','Error','Failed','Warning',
+                          'diff','commit','file','test','model','token','Aider v']
+              if any(kw in s for kw in keywords):
+                  prefix = ""
+                  if any(w in s for w in ['Creating','Created','Wrote','Modified']): prefix = "📄 "
+                  elif any(w in s for w in ['Applied','Edited']): prefix = "✏️ "
+                  elif any(w in s for w in ['scraping','repo-map']): prefix = "🔍 "
+                  elif any(w in s for w in ['Ran','test']): prefix = "🧪 "
+                  elif any(w in s for w in ['error','Error','Failed']): prefix = "⚠️ "
+                  elif any(w in s for w in ['commit']): prefix = "💾 "
+                  notify(f"{prefix}{s}")
+                  sent += 1
+                  if sent >= 8: break
 
-          # Deduplicate and limit
-          seen = set()
-          unique = []
-          for l in key_lines:
-              if l not in seen:
-                  seen.add(l)
-                  unique.append(l)
-
-          # Send progress (max 8 messages to avoid spam)
-          for l in unique[:8]:
-              prefix = ""
-              if any(w in l for w in ['Creating', 'Created', 'Wrote', 'Modified']): prefix = "📄 "
-              elif any(w in l for w in ['Applied', 'Edited']): prefix = "✏️ "
-              elif any(w in l for w in ['scraping', 'repo-map']): prefix = "🔍 "
-              elif any(w in l for w in ['Ran ', 'test', 'Test']): prefix = "🧪 "
-              elif any(w in l for w in ['error', 'Error', 'Failed']): prefix = "⚠️ "
-              elif any(w in l for w in ['commit', 'Commit']): prefix = "💾 "
-              notify(f"{prefix}{l}")
-
-          # Send diff summary
-          r = subprocess.run(['git', 'diff', '--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
+          # Send diff stat
+          r = subprocess.run(['git','diff','--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r.stdout.strip():
               notify(f"📊 Changes:\n{r.stdout.strip()[:400]}")
           PYEOF
@@ -133,10 +96,7 @@ jobs:
           cd /tmp/target-repo
           CHANGES=$(git status --porcelain | wc -l)
           echo "changes_count=${CHANGES}" >> $GITHUB_OUTPUT
-          if [ "${CHANGES}" -gt 0 ]; then
-            echo "=== ${CHANGES} changed files ==="
-            git diff --stat
-          fi
+          if [ "${CHANGES}" -gt 0 ]; then git diff --stat; fi
 
       - name: Push changes
         if: steps.changes.outputs.changes_count > 0
@@ -144,43 +104,36 @@ jobs:
         env: { GH_PAT: '${{ secrets.GH_PAT }}' }
         run: |
           cd /tmp/target-repo
-          BRANCH="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
-          git checkout -b "$BRANCH"
+          B="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$B"
           git config user.name "Vibe Code Bot"
           git config user.email "vibe-code-bot@users.noreply.github.com"
           git add -A
           git commit -m "Aider: ${{ inputs.prompt }}" || echo "(no changes)"
-          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$BRANCH"
-          echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
-          echo "Pushed: $BRANCH"
+          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$B"
+          echo "branch_name=$B" >> $GITHUB_OUTPUT
 
-      - name: Start Live Preview (Cloudflare Tunnel)
+      - name: Start Live Preview
         id: preview
+        continue-on-error: true
         run: |
           cd /tmp/target-repo
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          npm install -g serve 2>/dev/null || true
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           PORT=8080
-          if [ -f "package.json" ]; then
-            npm install --silent 2>/dev/null || true
-            (grep -q '"dev"' package.json && npm run dev -- --port $PORT --host 0.0.0.0 &) || \
-            (grep -q '"start"' package.json && PORT=$PORT npm start &) || \
-            (npx serve -l $PORT -s . &)
-          elif [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt --quiet 2>/dev/null || true
-            python -m http.server $PORT &
-          else
-            npx serve -l $PORT -s . &
-          fi
+          (nohup serve -l $PORT -s . > /tmp/srv.log 2>&1 &)
           sleep 3
-          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tunnel.log 2>&1 &
-          sleep 5
-          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          (./cloudflared tunnel --url http://localhost:$PORT > /tmp/tun.log 2>&1 &)
+          sleep 6
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tun.log | head -1)
           if [ -n "$TUNNEL_URL" ]; then
             echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
             echo "LIVE: $TUNNEL_URL"
           else
             echo "preview_url=" >> $GITHUB_OUTPUT
+            echo "Tunnel log:"; cat /tmp/tun.log
+            echo "Server log:"; cat /tmp/srv.log
           fi
 
       - name: Create Pull Request
@@ -190,23 +143,15 @@ jobs:
         run: |
           cd /tmp/target-repo
           PREVIEW_URL="${{ steps.preview.outputs.preview_url }}"
-          BODY="## Aider + DeepSeek
-
-          **Prompt:** ${{ inputs.prompt }}"
+          BODY="## Aider + DeepSeek (${{ inputs.model }})\n\n**Prompt:** ${{ inputs.prompt }}"
           if [ -n "$PREVIEW_URL" ]; then
-            BODY="${BODY}
-
-          **Live Preview:** ${PREVIEW_URL} (temporary)"
+            BODY="${BODY}\n\n**Live Preview:** ${PREVIEW_URL}"
           fi
-          PR_URL=$(gh pr create --repo "${{ inputs.repo }}" \
-            --head "${{ steps.commit.outputs.branch_name }}" \
-            --base "${{ inputs.branch }}" \
-            --title "Aider: ${{ inputs.prompt }}" \
-            --body "${BODY}" 2>&1)
+          PR_URL=$(gh pr create --repo "${{ inputs.repo }}" --head "${{ steps.commit.outputs.branch_name }}" --base "${{ inputs.branch }}" --title "Aider: ${{ inputs.prompt }}" --body "$(echo -e "${BODY}")" 2>&1)
           echo "PR: ${PR_URL}"
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
 
-      - name: Notify Worker - Done
+      - name: Notify - Done
         if: success()
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
@@ -214,13 +159,13 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }}}" || true
 
-      - name: Notify Worker - Fail
+      - name: Notify - Fail
         if: failure()
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d '{"type":"failed","message":"Aider workflow failed. Check run logs."}' || true
+            -d '{"type":"failed","message":"Aider workflow failed. Check GitHub Actions logs."}' || true
 
       - name: Hold Preview
         if: success() && steps.preview.outputs.preview_url != ''
