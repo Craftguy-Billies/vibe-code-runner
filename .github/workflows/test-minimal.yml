@@ -58,3 +58,9 @@ jobs:
 
       - name: Install Aider
         run: pip install aider-chat
+
+      - name: Clear history
+        if: inputs.clear_history == 'true'
+        run: |
+          cd /tmp/target-repo
+          rm -f .aider.chat.history.md .aider.input.history
