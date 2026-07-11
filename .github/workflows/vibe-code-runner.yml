@@ -249,3 +249,14 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"success":false,"error":"GitHub Actions workflow failed. Check the workflow run logs for details."}' \
             || echo "Failed to notify worker (non-critical)"
+
+      - name: Hold for Preview
+        if: success() && steps.preview.outputs.preview_url != ''
+        run: |
+          echo "========================================="
+          echo " LIVE PREVIEW STILL ACTIVE"
+          echo " ${{ steps.preview.outputs.preview_url }}"
+          echo " Open this URL on your phone NOW"
+          echo " Tunnel will close in 120 seconds..."
+          echo "========================================="
+          sleep 120
