@@ -49,45 +49,66 @@ jobs:
 
           aider --yes --model openai/${{ inputs.model }} --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
 
-          echo "=== PARSING AIDER OUTPUT ==="
+          echo "=== SENDING FULL AIDER OUTPUT AS PROGRESS ==="
           python3 << 'PYEOF'
           import urllib.request, json, os, subprocess
           cb, cs = os.environ['CB_URL'], os.environ['CB_SECRET']
+
           def notify(msg):
               try:
-                  d = json.dumps({"type":"progress","message":msg[:400]}).encode()
+                  text = msg[:600]  # Telegram limit is 4096, keep progress msgs short
+                  d = json.dumps({"type":"progress","message":text}).encode()
                   r = urllib.request.Request(cb, data=d, headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}, method='POST')
                   urllib.request.urlopen(r, timeout=5)
-              except: pass
+              except Exception as e:
+                  print(f"Notify failed: {e}")
 
           with open('/tmp/aider.log') as f:
               log = f.read()
 
-          # Send key lines from Aider output
-          sent = 0
-          for line in log.split('\n'):
-              s = line.strip()
-              if not s or len(s) < 10: continue
-              if any(skip in s for skip in ['Traceback','  File "','    ','━━','╭','│','╰','▐']): continue
-              keywords = ['Creating','Created','Applied','Edited','Wrote','Modified','scraping',
-                          'repo-map','plan','Ran','error','Error','Failed','Warning',
-                          'diff','commit','file','test','model','token','Aider v']
-              if any(kw in s for kw in keywords):
-                  prefix = ""
-                  if any(w in s for w in ['Creating','Created','Wrote','Modified']): prefix = "📄 "
-                  elif any(w in s for w in ['Applied','Edited']): prefix = "✏️ "
-                  elif any(w in s for w in ['scraping','repo-map']): prefix = "🔍 "
-                  elif any(w in s for w in ['Ran','test']): prefix = "🧪 "
-                  elif any(w in s for w in ['error','Error','Failed']): prefix = "⚠️ "
-                  elif any(w in s for w in ['commit']): prefix = "💾 "
-                  notify(f"{prefix}{s}")
-                  sent += 1
-                  if sent >= 8: break
+          # Remove noisy box-drawing chars and progress bars
+          import re
+          log = re.sub(r'[━┃┏┓┗┛┣┫┳┻╋╭╮╰╯│─▐▌▀▄█]', '', log)
+          log = re.sub(r'\d+/\d+ lines?\s+\.+', '', log)
 
-          # Send diff stat
+          lines = log.split('\n')
+          useful = []
+          for s in lines:
+              s = s.strip()
+              if not s or len(s) < 5: continue
+              # Skip pure noise
+              if s.startswith('    ') or s.startswith('Traceback'): continue
+              if s.startswith('File "') and 'line' in s: continue  # stack traces
+              if '━━' in s or '╭' in s or '╰' in s: continue  # box chars
+              useful.append(s)
+
+          # Send ALL useful lines as progress (up to 20 messages)
+          sent = 0
+          for s in useful:
+              if sent >= 20: break
+              prefix = ""
+              if any(w in s for w in ['Creating','Created','Wrote','Modified','write','create']): prefix = "📄 "
+              elif any(w in s for w in ['Applied','Edited','edit','patch']): prefix = "✏️ "
+              elif any(w in s for w in ['scraping','repo-map','map','context']): prefix = "🔍 "
+              elif any(w in s for w in ['Ran','test','Test','run','python','pytest']): prefix = "🧪 "
+              elif any(w in s for w in ['error','Error','Failed','fail']): prefix = "⚠️ "
+              elif any(w in s for w in ['commit','Commit','committed']): prefix = "💾 "
+              elif any(w in s for w in ['diff','Diff','change']): prefix = "📊 "
+              elif any(w in s for w in ['model','Model','token','Token','cost']): prefix = "💰 "
+              elif any(w in s for w in ['Aider','aider']): prefix = "🤖 "
+              notify(f"{prefix}{s}")
+              sent += 1
+
+          # Send full diff stat as final progress
           r = subprocess.run(['git','diff','--stat'], capture_output=True, text=True, cwd='/tmp/target-repo')
           if r.stdout.strip():
-              notify(f"📊 Changes:\n{r.stdout.strip()[:400]}")
+              notify(f"📊 Diff stat:\n{r.stdout.strip()[:500]}")
+
+          # Send list of changed files
+          r2 = subprocess.run(['git','diff','--name-only'], capture_output=True, text=True, cwd='/tmp/target-repo')
+          if r2.stdout.strip():
+              files = r2.stdout.strip().split('\n')
+              notify(f"📁 Changed files ({len(files)}):\n" + '\n'.join(f'  • {f}' for f in files[:15]))
           PYEOF
 
       - name: Check changes
