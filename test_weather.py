@@ -12,7 +12,7 @@ class TestFetchWeather(unittest.TestCase):
     def test_fetch_weather_success(self, mock_urlopen: MagicMock) -> None:
         """Test that a valid response returns the weather string."""
         mock_response = MagicMock()
-        mock_response.read.return_value = b"Sunny +25°C"
+        mock_response.read.return_value = "Sunny +25°C".encode()
         mock_urlopen.return_value.__enter__.return_value = mock_response
 
         result = fetch_weather("London")
