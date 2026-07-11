@@ -3,14 +3,33 @@ name: Vibe Code Runner
 on:
   workflow_dispatch:
     inputs:
-      job_id: { required: true, type: string }
-      repo: { required: true, type: string }
-      branch: { required: false, type: string, default: 'main' }
-      prompt: { required: true, type: string }
-      model: { required: false, type: string, default: 'deepseek-v4-flash' }
-      clear_history: { required: false, type: string, default: 'false' }
-      callback_url: { required: true, type: string }
-      callback_secret: { required: true, type: string }
+      job_id:
+        required: true
+        type: string
+      repo:
+        required: true
+        type: string
+      branch:
+        required: false
+        type: string
+        default: 'main'
+      prompt:
+        required: true
+        type: string
+      model:
+        required: false
+        type: string
+        default: 'deepseek-v4-flash'
+      clear_history:
+        required: false
+        type: string
+        default: 'false'
+      callback_url:
+        required: true
+        type: string
+      callback_secret:
+        required: true
+        type: string
 
 jobs:
   vibe-code:
