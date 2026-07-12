@@ -111,12 +111,28 @@ jobs:
           # Send progress to Worker with proper JSON escaping
           CB="${{ inputs.callback_url }}"
           CS="${{ inputs.callback_secret }}"
-          cat /tmp/aider-stdout.log | grep -vE '(Downloading|Collecting|Installing|Successfully|pip install|wheel|metadata|━━|╭|╰|^$|●|○|◌)' | grep -vE '^\s*$' | sed 's/\x1b\[[0-9;]*m//g' | while IFS= read -r line; do
-            stripped=$(echo "$line" | xargs)
-            [ ${#stripped} -lt 10 ] && continue
-            ESCAPED=$(echo "$stripped" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read())[:500])" 2>/dev/null || echo '""')
-            [ ${#ESCAPED} -gt 10 ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":$ESCAPED}" > /dev/null 2>&1 || true
-          done
+          # Send raw Aider output as progress - NO filtering
+          python3 -c "
+import json, urllib.request, os
+cb = os.environ['CB']
+cs = os.environ['CS']
+with open('/tmp/aider-stdout.log') as f:
+    lines = [l.strip() for l in f if l.strip() and len(l.strip()) > 5]
+# Chunk into ~2500 char messages to stay under Telegram 4096 limit
+chunk = ''
+for l in lines:
+    if len(chunk) + len(l) > 2500:
+        data = json.dumps({'type':'progress','message':chunk}).encode()
+        urllib.request.urlopen(urllib.request.Request(cb, data=data,
+            headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}), timeout=5)
+        chunk = l + '\n'
+    else:
+        chunk += l + '\n'
+if chunk.strip():
+    data = json.dumps({'type':'progress','message':chunk}).encode()
+    urllib.request.urlopen(urllib.request.Request(cb, data=data,
+        headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}), timeout=5)
+" CB="$CB" CS="$CS" 2>/dev/null || true
 
           # Send diff summary
           git diff --stat 2>/dev/null | head -5 | while IFS= read -r line; do
