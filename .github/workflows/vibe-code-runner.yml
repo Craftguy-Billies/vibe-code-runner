@@ -2,15 +2,46 @@ name: Vibe Code Runner
 on:
   workflow_dispatch:
     inputs:
-      job_id: {description: Job ID, required: true, type: string}
-      repo: {description: Target repo, required: true, type: string}
-      branch: {description: Target branch, required: false, type: string, default: main}
-      prompt: {description: Coding task, required: true, type: string}
-      model: {description: DeepSeek model, required: false, type: string, default: deepseek-v4-flash}
-      clear_history: {description: Clear chat history, required: false, type: string, default: 'false'}
-      mode: {description: pr or wip, required: false, type: string, default: pr}
-      callback_url: {description: Worker callback URL, required: true, type: string}
-      callback_secret: {description: Worker secret, required: true, type: string}
+      job_id:
+        description: Job ID
+        required: true
+        type: string
+      repo:
+        description: Target repo
+        required: true
+        type: string
+      branch:
+        description: Target branch
+        required: false
+        type: string
+        default: main
+      prompt:
+        description: Coding task
+        required: true
+        type: string
+      model:
+        description: DeepSeek model
+        required: false
+        type: string
+        default: deepseek-v4-flash
+      clear_history:
+        description: Clear chat history
+        required: false
+        type: string
+        default: 'false'
+      mode:
+        description: pr or wip
+        required: false
+        type: string
+        default: pr
+      callback_url:
+        description: Worker callback URL
+        required: true
+        type: string
+      callback_secret:
+        description: Worker secret
+        required: true
+        type: string
 
 jobs:
   vibe-code:
