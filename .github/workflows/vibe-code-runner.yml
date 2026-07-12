@@ -23,7 +23,7 @@ on:
         description: DeepSeek model
         required: false
         type: string
-        default: deepseek-v4-flash
+        default: deepseek-chat
       clear_history:
         description: Clear chat history
         required: false
@@ -49,23 +49,21 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Clone target repo
-        env: {GH_PAT: '${{ secrets.GH_PAT }}'}
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           if [ "${{ inputs.mode }}" = "wip" ]; then
-            WIP_BRANCH="vibe-code/wip"
             git clone "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
             cd /tmp/target-repo
-            git fetch origin "$WIP_BRANCH" 2>/dev/null && git checkout "$WIP_BRANCH" || git checkout -b "$WIP_BRANCH"
-            echo "WIP mode: continuing on branch $WIP_BRANCH"
+            git fetch origin vibe-code/wip 2>/dev/null && git checkout vibe-code/wip || git checkout -b vibe-code/wip
           else
-            git clone --branch "${{ inputs.branch }}" --single-branch \
-              "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
-            echo "PR mode: fresh clone of ${{ inputs.branch }}"
+            git clone --branch "${{ inputs.branch }}" --single-branch "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
           fi
           ls /tmp/target-repo
 
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.11'
 
       - name: Install Aider
         run: pip install aider-chat
@@ -79,27 +77,19 @@ jobs:
       - name: Web Search
         run: |
           Q="${{ inputs.prompt }}"
-          echo "=== WEB SEARCH ==="
           TKEY="${{ secrets.TAVILY_API_KEY }}"
           if [ -n "$TKEY" ]; then
-            curl -s -X POST "https://api.tavily.com/search" -H "Content-Type: application/json" \
-              -d "{\"api_key\":\"$TKEY\",\"query\":\"$Q\",\"search_depth\":\"basic\",\"max_results\":5}" \
-              | python3 -c "import sys,json; d=json.load(sys.stdin); [print(r['title'],r['url'],r.get('content','')[:200],sep='\n',end='\n\n') for r in d.get('results',[])]" \
-              > /tmp/web-results.txt 2>/dev/null
+            curl -s -X POST "https://api.tavily.com/search" -H "Content-Type: application/json" -d "{\"api_key\":\"$TKEY\",\"query\":\"$Q\",\"search_depth\":\"basic\",\"max_results\":5}" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(r['title'],r['url'],r.get('content','')[:200],sep='\n',end='\n\n') for r in d.get('results',[])]" > /tmp/web-results.txt 2>/dev/null
           fi
           if [ ! -s /tmp/web-results.txt ]; then
             EQ=$(echo "$Q" | python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read()[:200]))")
-            curl -sL "https://html.duckduckgo.com/html/?q=$EQ" -H "User-Agent: vibe-code-bot/1.0" \
-              | grep -oP '<a[^>]*class="result__a"[^>]*href="[^"]*"[^>]*>[^<]+</a>' | head -5 > /tmp/web-results.txt 2>/dev/null
+            curl -sL "https://html.duckduckgo.com/html/?q=$EQ" -H "User-Agent: vibe-code-bot/1.0" | grep -oP '<a[^>]*class="result__a"[^>]*href="[^"]*"[^>]*>[^<]+</a>' | head -5 > /tmp/web-results.txt 2>/dev/null
           fi
-          wc -l /tmp/web-results.txt 2>/dev/null || echo "0 results"
+          wc -l /tmp/web-results.txt 2>/dev/null || echo "0 web results"
 
       - name: Notify Started
         run: |
-          curl -s -X POST "${{ inputs.callback_url }}" \
-            -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"type\":\"started\",\"message\":\"Aider (${{ inputs.model }}) analyzing...\"}" || true
+          curl -s -X POST "${{ inputs.callback_url }}" -H "Authorization: Bearer ${{ inputs.callback_secret }}" -H "Content-Type: application/json" -d "{\"type\":\"started\",\"message\":\"Aider (${{ inputs.model }}) analyzing...\"}" || true
 
       - name: Run Aider
         env:
@@ -107,78 +97,30 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           cd /tmp/target-repo
-
-          # 1M context metadata for DeepSeek V4
-          python3 -c "
-          import json
-          meta = {}
-          for m in ['deepseek-v4-flash','deepseek-v4-pro','deepseek-chat','deepseek-reasoner']:
-              meta[f'openai/{m}'] = {'max_tokens':1000000,'max_input_tokens':1000000,'max_output_tokens':384000,'mode':'chat'}
-          with open('.aider.model.metadata.json','w') as f:
-              json.dump(meta, f)
-          "
-
-          echo "Model: openai/${{ inputs.model }} | Context: 1M tokens"
-
-          # Run Aider: stdout to log, stderr separate
-          aider --yes-always --model "openai/${{ inputs.model }}" \
-            --message "${{ inputs.prompt }}" --no-suggest-shell-commands \
-            --model-metadata-file .aider.model.metadata.json \
-            > /tmp/aider-stdout.log 2>/tmp/aider-stderr.log
-
+          python3 -c "import json; meta={}; [meta.update({f'openai/{m}':{'max_tokens':1000000,'max_input_tokens':1000000,'max_output_tokens':384000,'mode':'chat'}}) for m in ['deepseek-v4-flash','deepseek-chat','deepseek-v4-pro','deepseek-reasoner']]; json.dump(meta,open('.aider.model.metadata.json','w'))"
+          echo "Model: openai/${{ inputs.model }} | Context: 1M in / 384K out"
+          aider --yes-always --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands --model-metadata-file .aider.model.metadata.json > /tmp/aider-stdout.log 2>/tmp/aider-stderr.log
           AIDER_EXIT=$?
           echo "Aider exit: $AIDER_EXIT"
-
-          # Check for actual edits
           if ! grep -qE '(Applied|Created|Modified|Wrote|Edited)' /tmp/aider-stdout.log /tmp/aider-stderr.log; then
-            echo "NO EDITS DETECTED. Aider stderr:"
+            echo "NO EDITS"
             tail -20 /tmp/aider-stderr.log
             exit 1
           fi
-
-          # ---- Send progress: filter noise, show key events ----
           CB="${{ inputs.callback_url }}"
           CS="${{ inputs.callback_secret }}"
-          send_progress() {
-            local msg="$1"
-            python3 -c "
-import json, urllib.request, os
-msg = '''$msg'''[:500]
-data = json.dumps({'type':'progress','message':msg}).encode()
-urllib.request.urlopen(urllib.request.Request(os.environ['CB'], data=data,
-    headers={'Authorization':f\"Bearer {os.environ['CS']}\",'Content-Type':'application/json'}), timeout=5)
-" CB="$CB" CS="$CS" 2>/dev/null || true
-          }
-
-          # Extract and send key Aider lines
-          grep -vE '^(Downloading|Collecting|Installing|Successfully|Requirement|  ━|^$)' /tmp/aider-stdout.log | \
-          grep -vE '(pip install|setup.py|wheel|\.whl|metadata)' | \
-          grep -E '(Applied|Created|Modified|Wrote|Commit|commit|Token|error|Error|Failed|repo-map|ANSWER|plan)' | \
-          head -15 | while IFS= read -r line; do
-            send_progress "$line"
+          grep -vE '(Downloading|Collecting|Installing|Successfully|pip|wheel|metadata)' /tmp/aider-stdout.log | grep -E '(Applied|Created|Modified|Wrote|Commit|Token|error|repo-map|ANSWER|plan)' | head -10 | while IFS= read -r line; do
+            curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":\"$line\"}" > /dev/null 2>&1 || true
           done
-
-          # Send diff summary
           DIFF=$(git diff --stat 2>/dev/null | head -3)
-          [ -n "$DIFF" ] && send_progress "📊 $DIFF"
-
-          # ---- AI FINAL SUMMARY ----
-          echo "=== AI SUMMARY ==="
+          [ -n "$DIFF" ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":\"Diff: $DIFF\"}" > /dev/null 2>&1 || true
           git add -A 2>/dev/null
           DIFF_FULL=$(git diff --staged 2>/dev/null | head -100 || git diff 2>/dev/null | head -100)
           if [ -n "$DIFF_FULL" ]; then
-            python3 -c "
-import json, urllib.request, os
-diff = os.environ.get('D','')
-prompt = f'Based on this git diff, write a 2-3 sentence summary of what was changed. Files, functions, features. Diff: {diff}'
-data = json.dumps({'model':'${{ inputs.model }}','messages':[{'role':'user','content':prompt}],'max_tokens':200,'temperature':0.3})
-req = urllib.request.Request('https://api.deepseek.com/v1/chat/completions', data=data.encode(),
-    headers={'Content-Type':'application/json','Authorization':'Bearer ${{ secrets.DEEPSEEK_API_KEY }}'})
-resp = json.loads(urllib.request.urlopen(req, timeout=15).read())
-summary = resp['choices'][0]['message']['content'][:500]
-with open('/tmp/ai-summary.txt','w') as f: f.write(summary)
-print(f'SUMMARY: {summary}')
-" D="$DIFF_FULL" 2>/dev/null
+            echo "Generating AI summary..."
+            SUMMARY_PROMPT="Based on this git diff, write a 2-3 sentence summary of what was changed. Be specific. Diff: $DIFF_FULL"
+            python3 -c "import json,urllib.request,os; d=os.environ['D']; p=f'Based on this git diff, write a 2-3 sentence summary: {d}'; r=json.dumps({'model':'${{ inputs.model }}','messages':[{'role':'user','content':p}],'max_tokens':200,'temperature':0.3}); req=urllib.request.Request('https://api.deepseek.com/v1/chat/completions',data=r.encode(),headers={'Content-Type':'application/json','Authorization':'Bearer ${{ secrets.DEEPSEEK_API_KEY }}'}); resp=json.loads(urllib.request.urlopen(req,timeout=15).read()); open('/tmp/ai-summary.txt','w').write(resp['choices'][0]['message']['content'][:500])" D="$DIFF_FULL" 2>/dev/null
+            cat /tmp/ai-summary.txt 2>/dev/null
           fi
 
       - name: Check changes
@@ -192,26 +134,38 @@ print(f'SUMMARY: {summary}')
       - name: Push changes
         if: steps.changes.outputs.changes_count > 0
         id: commit
-        env: {GH_PAT: '${{ secrets.GH_PAT }}'}
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           cd /tmp/target-repo
-          if [ "${{ inputs.mode }}" = "wip" ]; then
-            B="vibe-code/wip"
-          else
-            B="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"
-          fi
+          if [ "${{ inputs.mode }}" = "wip" ]; then B="vibe-code/wip"; else B="vibe-code/job-${{ inputs.job_id }}-$(date +%Y%m%d-%H%M%S)"; fi
           git config user.name "Vibe Code Bot"
           git config user.email "vibe-code-bot@users.noreply.github.com"
           git add -A
           git commit -m "Aider: ${{ inputs.prompt }}" || echo "(no changes)"
-          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$B" 2>/dev/null || \
-          git push --force "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$B"
+          git push "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$B" 2>/dev/null || git push --force "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" "$B"
           echo "branch_name=$B" >> $GITHUB_OUTPUT
+
+      - name: Live Preview
+        id: preview
+        continue-on-error: true
+        run: |
+          cd /tmp/target-repo
+          npm install -g serve 2>/dev/null || true
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared && chmod +x cloudflared
+          PORT=8080
+          nohup serve -l $PORT -s . > /tmp/srv.log 2>&1 &
+          sleep 3
+          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tun.log 2>&1 &
+          sleep 6
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tun.log | head -1)
+          if [ -n "$TUNNEL_URL" ]; then echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT; echo "LIVE: $TUNNEL_URL"; else echo "preview_url=" >> $GITHUB_OUTPUT; fi
 
       - name: Create PR
         if: steps.changes.outputs.changes_count > 0 && inputs.mode == 'pr'
         id: pr
-        env: {GH_TOKEN: '${{ secrets.GH_PAT }}'}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           cd /tmp/target-repo
           BODY="## Aider + DeepSeek\n\n**Prompt:** ${{ inputs.prompt }}\n\n**Model:** ${{ inputs.model }} (1M context)"
@@ -220,47 +174,23 @@ print(f'SUMMARY: {summary}')
           PR_URL=$(gh pr create --repo "${{ inputs.repo }}" --head "${{ steps.commit.outputs.branch_name }}" --base "${{ inputs.branch }}" --title "Aider: ${{ inputs.prompt }}" --body "$(echo -e "${BODY}")" 2>&1)
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
 
-      - name: Live Preview
-        id: preview
-        continue-on-error: true
-        run: |
-          cd /tmp/target-repo
-          npm install -g serve 2>/dev/null || true
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared; PORT=8080
-          nohup serve -l $PORT -s . > /tmp/srv.log 2>&1 & sleep 3
-          ./cloudflared tunnel --url http://localhost:$PORT > /tmp/tun.log 2>&1 & sleep 6
-          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /tmp/tun.log | head -1)
-          if [ -n "$TUNNEL_URL" ]; then echo "preview_url=$TUNNEL_URL" >> $GITHUB_OUTPUT; echo "LIVE: $TUNNEL_URL"
-          else echo "preview_url=" >> $GITHUB_OUTPUT; fi
-
       - name: Notify Done
         if: success()
         run: |
-          AI_SUMMARY=$(cat /tmp/ai-summary.txt 2>/dev/null || echo "")
+          AI_SUMMARY=$(cat /tmp/ai-summary.txt 2>/dev/null | tr '\n' ' ' || echo "")
           CHANGED=$(cd /tmp/target-repo && git diff --name-only HEAD~1 2>/dev/null | tr '\n' ', ')
           SHORTSTAT=$(cd /tmp/target-repo && git diff --shortstat HEAD~1 2>/dev/null)
-          if [ -n "$AI_SUMMARY" ]; then
-            FINAL_SUMMARY="$AI_SUMMARY | Files: ${CHANGED:-none} | ${SHORTSTAT:-no stats}"
-          else
-            FINAL_SUMMARY="Changed: ${CHANGED:-none} | ${SHORTSTAT:-no stats}"
-          fi
-          curl -s -X POST "${{ inputs.callback_url }}" \
-            -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }},\"summary\":\"${FINAL_SUMMARY}\"}" || true
+          FINAL="${AI_SUMMARY:-Changed: ${CHANGED:-none}} | ${SHORTSTAT:-no stats}"
+          curl -s -X POST "${{ inputs.callback_url }}" -H "Authorization: Bearer ${{ inputs.callback_secret }}" -H "Content-Type: application/json" -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }},\"summary\":\"${FINAL}\"}" || true
 
       - name: Notify Fail
         if: failure()
         run: |
           ERR=$(tail -5 /tmp/aider-stderr.log 2>/dev/null | tr '\n' ' ')
-          curl -s -X POST "${{ inputs.callback_url }}" \
-            -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"type\":\"failed\",\"message\":\"Aider failed: ${ERR}\"}" || true
+          curl -s -X POST "${{ inputs.callback_url }}" -H "Authorization: Bearer ${{ inputs.callback_secret }}" -H "Content-Type: application/json" -d "{\"type\":\"failed\",\"message\":\"Aider failed: ${ERR}\"}" || true
 
       - name: Hold Preview
         if: success() && steps.preview.outputs.preview_url != ''
         run: |
-          echo "=== LIVE: ${{ steps.preview.outputs.preview_url }} ==="
+          echo "LIVE: ${{ steps.preview.outputs.preview_url }}"
           sleep 90
