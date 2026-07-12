@@ -127,9 +127,10 @@ jobs:
 
           # Send filtered progress: only meaningful Aider lines
           CB="${{ inputs.callback_url }}"; CS="${{ inputs.callback_secret }}"
-          grep -vE '^(Downloading|Collecting|Installing|Successfully|Requirement|  ━|^$)' /tmp/aider.log | \
-          grep -vE '(pip install|setup.py|wheel)' | \
-          grep -E '(Creating|Created|Applied|Edited|Modified|Wrote|Commit|commit|Token|error|Error|Failed|scraping|repo-map|plan|ANSWER|summar)' | \
+          grep -vE '^(Downloading|Collecting|Installing|Successfully|Requirement|  ━|^$|oll|nstalling|ownloading|uccessfully|OPENAI|COMMIT_MSG|SUMMARY_PROMPT|curl |echo |grep |while |line=|head |tail |python|CB=|CS=|cat |cut |\[3|\[0)' /tmp/aider.log | \
+          grep -vE '(pip install|setup.py|wheel|model-metadata|--yes|--message|--model|aider-chat|Running setup|Building wheel)' | \
+          grep -vE '^\s*$' | \
+          grep -E '(Creating|Created|Applied|Edited|Modified|Wrote|Commit|commit|Token|error|Error|Failed|scraping|repo-map|plan|ANSWER|summar|Applied|Asked|Added|Removed)' | \
           head -20 | while IFS= read -r line; do
             line=$(echo "$line" | tr -d '\n\r' | cut -c1-500)
             curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
