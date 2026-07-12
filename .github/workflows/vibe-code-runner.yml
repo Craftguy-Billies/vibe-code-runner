@@ -103,7 +103,7 @@ jobs:
           aider --yes-always --model "openai/${{ inputs.model }}" \
             --message "${{ inputs.prompt }}" --no-suggest-shell-commands \
             --model-metadata-file .aider.model.metadata.json \
-            2>&1 | tee /tmp/aider.log
+            > /tmp/aider.log 2>/tmp/aider-err.log
           AIDER_EXIT=${PIPESTATUS[0]}
           echo "Aider exit: ${AIDER_EXIT}"
 
@@ -152,8 +152,9 @@ jobs:
           fi
 
           [ ${AIDER_EXIT} -ne 0 ] && exit ${AIDER_EXIT}
-          if ! grep -qE '(Applied|Created|Modified|Wrote|Edited)' /tmp/aider.log; then
-            echo "Aider produced no changes"
+          if ! grep -qE '(Applied|Created|Modified|Wrote|Edited)' /tmp/aider.log /tmp/aider-err.log 2>/dev/null; then
+            echo "Aider produced no changes (checking both stdout+stderr)"
+            cat /tmp/aider-err.log | tail -20
             exit 1
           fi
 
