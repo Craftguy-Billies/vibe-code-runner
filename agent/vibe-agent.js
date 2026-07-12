@@ -147,6 +147,22 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "youtube_download",
+      description: "Download a YouTube (or other supported site) video using yt-dlp. Requires yt-dlp to be installed on the system (install via `pip install yt-dlp` or your package manager). Returns the path of the downloaded file.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL of the video to download (e.g. https://www.youtube.com/watch?v=...)." },
+          format: { type: "string", enum: ["mp4", "mp3"], description: "Output format. 'mp4' for video (best quality merged), 'mp3' for audio extraction. Default 'mp4'." },
+          output_dir: { type: "string", description: "Directory (relative to repo root) where the video should be saved. Default '.'." },
+        },
+        required: ["url"],
+      },
+    },
+  },
 ];
 
 // ── Tool implementations ──────────────────────────────────────
@@ -301,6 +317,60 @@ async function toolWebSearch({ query, max_results = 5 }) {
   }
 }
 
+/**
+ * Download a video from YouTube (or other supported sites) using yt-dlp.
+ */
+async function toolYoutubeDownload(repoDir, { url, format = "mp4", output_dir = "." }) {
+  const fullOutputDir = resolve(repoDir, output_dir);
+  if (!existsSync(fullOutputDir)) {
+    await mkdir(fullOutputDir, { recursive: true });
+  }
+
+  // Build the yt-dlp command
+  let command;
+  if (format === "mp3") {
+    command = `yt-dlp -x --audio-format mp3 -o "${fullOutputDir}/%(title)s.%(ext)s" "${url}"`;
+  } else {
+    command = `yt-dlp -f bestvideo+bestaudio --merge-output-format mp4 -o "${fullOutputDir}/%(title)s.%(ext)s" "${url}"`;
+  }
+
+  try {
+    const { stdout, stderr } = await execAsync(command, {
+      cwd: repoDir,
+      timeout: 300000, // 5 min max
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    // Try to parse the filename from yt-dlp output (last line often contains "Destination: ...")
+    const lines = stdout.split("\n").filter(l => l.trim() !== "");
+    const lastLine = lines[lines.length - 1] || "";
+    let filename = "";
+    if (lastLine.includes("[download]")) {
+      const destMatch = lastLine.match(/Destination:\s*(.+)/);
+      if (destMatch) filename = destMatch[1].trim();
+    }
+    if (!filename) {
+      // Fall back to showing last few lines
+      filename = "See stdout for filename";
+    }
+
+    return JSON.stringify({
+      ok: true,
+      output_dir: fullOutputDir,
+      filename,
+      stdout: stdout.substring(0, 2000),
+      stderr: stderr ? stderr.substring(0, 1000) : "",
+    });
+  } catch (e) {
+    return JSON.stringify({
+      error: `YouTube download failed: ${e.message}`,
+      stdout: e.stdout ? e.stdout.substring(0, 2000) : "",
+      stderr: e.stderr ? e.stderr.substring(0, 1000) : "",
+      hint: "Please ensure yt-dlp is installed. Run: pip install yt-dlp (or brew install yt-dlp on macOS, or apt install yt-dlp on Linux).",
+    });
+  }
+}
+
 // ── Tool dispatcher ───────────────────────────────────────────
 
 async function executeTool(repoDir, toolCall) {
@@ -316,6 +386,7 @@ async function executeTool(repoDir, toolCall) {
     case "search_code": return toolSearchCode(repoDir, args);
     case "replace_in_file": return toolReplaceInFile(repoDir, args);
     case "web_search": return toolWebSearch(args);
+    case "youtube_download": return toolYoutubeDownload(repoDir, args);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
