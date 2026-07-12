@@ -98,30 +98,15 @@ jobs:
         run: |
           cd /tmp/target-repo
           python3 -c "import json; meta={}; [meta.update({f'openai/{m}':{'max_tokens':1000000,'max_input_tokens':1000000,'max_output_tokens':384000,'mode':'chat'}}) for m in ['deepseek-v4-flash','deepseek-chat','deepseek-v4-pro','deepseek-reasoner']]; json.dump(meta,open('.aider.model.metadata.json','w'))"
-          echo "Model: openai/${{ inputs.model }} | Context: 1M in / 384K out"
-          aider --yes-always --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands --model-metadata-file .aider.model.metadata.json > /tmp/aider-stdout.log 2>/tmp/aider-stderr.log
-          AIDER_EXIT=$?
-          echo "Aider exit: $AIDER_EXIT"
-          if ! grep -qE '(Applied|Created|Modified|Wrote|Edited)' /tmp/aider-stdout.log /tmp/aider-stderr.log; then
-            echo "NO EDITS"
-            tail -20 /tmp/aider-stderr.log
-            exit 1
-          fi
-          CB="${{ inputs.callback_url }}"
-          CS="${{ inputs.callback_secret }}"
-          grep -vE '(Downloading|Collecting|Installing|Successfully|pip|wheel|metadata)' /tmp/aider-stdout.log | grep -E '(Applied|Created|Modified|Wrote|Commit|Token|error|repo-map|ANSWER|plan)' | head -10 | while IFS= read -r line; do
-            curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":\"$line\"}" > /dev/null 2>&1 || true
-          done
-          DIFF=$(git diff --stat 2>/dev/null | head -3)
-          [ -n "$DIFF" ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":\"Diff: $DIFF\"}" > /dev/null 2>&1 || true
-          git add -A 2>/dev/null
-          DIFF_FULL=$(git diff --staged 2>/dev/null | head -100 || git diff 2>/dev/null | head -100)
-          if [ -n "$DIFF_FULL" ]; then
-            echo "Generating AI summary..."
-            SUMMARY_PROMPT="Based on this git diff, write a 2-3 sentence summary of what was changed. Be specific. Diff: $DIFF_FULL"
-            python3 -c "import json,urllib.request,os; d=os.environ['D']; p=f'Based on this git diff, write a 2-3 sentence summary: {d}'; r=json.dumps({'model':'${{ inputs.model }}','messages':[{'role':'user','content':p}],'max_tokens':200,'temperature':0.3}); req=urllib.request.Request('https://api.deepseek.com/v1/chat/completions',data=r.encode(),headers={'Content-Type':'application/json','Authorization':'Bearer ${{ secrets.DEEPSEEK_API_KEY }}'}); resp=json.loads(urllib.request.urlopen(req,timeout=15).read()); open('/tmp/ai-summary.txt','w').write(resp['choices'][0]['message']['content'][:500])" D="$DIFF_FULL" 2>/dev/null
-            cat /tmp/ai-summary.txt 2>/dev/null
-          fi
+          echo "Model: openai/${{ inputs.model }} | Context: 1M"
+          aider --yes-always --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands --model-metadata-file .aider.model.metadata.json > /tmp/aider-stdout.log 2>/tmp/aider-stderr.log || true
+          echo "=== AIDER DONE ==="
+          cat /tmp/aider-stdout.log | tail -30
+          echo "=== STDERR ==="
+          cat /tmp/aider-stderr.log | tail -10
+          echo "=== GIT STATUS ==="
+          git diff --stat
+          git status --porcelain
 
       - name: Check changes
         id: changes
