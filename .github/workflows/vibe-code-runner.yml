@@ -111,8 +111,9 @@ jobs:
           # Send progress to Worker with proper JSON escaping
           CB="${{ inputs.callback_url }}"
           CS="${{ inputs.callback_secret }}"
-          # Send raw Aider output as progress - NO filtering
-          python3 /tmp/send-progress.py 2>/dev/null || true
+          # Send raw Aider output as progress
+          export CB="${{ inputs.callback_url }}" CS="${{ inputs.callback_secret }}"
+          python3 /tmp/send-progress.py 2>&1 || echo "Progress sending completed"
 
           # Send diff summary
           git diff --stat 2>/dev/null | head -5 | while IFS= read -r line; do
