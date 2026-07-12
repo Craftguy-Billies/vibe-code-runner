@@ -87,6 +87,44 @@ jobs:
           fi
           wc -l /tmp/web-results.txt 2>/dev/null || echo "0 web results"
 
+      - name: Create helper scripts
+        run: |
+          cat > /tmp/send-progress.py << 'PYEOF'
+          import json, urllib.request, os
+          cb = os.environ['CB']
+          cs = os.environ['CS']
+          with open('/tmp/aider-stdout.log') as f:
+              lines = [l.strip() for l in f if l.strip() and len(l.strip()) > 5]
+          chunk = ''
+          for l in lines:
+              if len(chunk) + len(l) > 2500:
+                  data = json.dumps({'type':'progress','message':chunk}).encode()
+                  urllib.request.urlopen(urllib.request.Request(cb, data=data,
+                      headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}), timeout=5)
+                  chunk = l + '\n'
+              else:
+                  chunk += l + '\n'
+          if chunk.strip():
+              data = json.dumps({'type':'progress','message':chunk}).encode()
+              urllib.request.urlopen(urllib.request.Request(cb, data=data,
+                  headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}), timeout=5)
+          PYEOF
+          cat > /tmp/ai-summary.py << 'PYEOF'
+          import json, urllib.request, os, sys
+          diff = os.environ.get('D','')
+          key = os.environ.get('K','')
+          model = os.environ.get('M','deepseek-chat')
+          if not diff or not key: sys.exit(0)
+          prompt = f'Based on this git diff, write a 2-3 sentence summary in Chinese of what was changed: {diff}'
+          data = json.dumps({'model':model,'messages':[{'role':'user','content':prompt}],'max_tokens':200,'temperature':0.3}).encode()
+          req = urllib.request.Request('https://api.deepseek.com/v1/chat/completions', data=data,
+              headers={'Content-Type':'application/json','Authorization':f'Bearer {key}'})
+          resp = json.loads(urllib.request.urlopen(req, timeout=20).read())
+          summary = resp['choices'][0]['message']['content'][:500]
+          with open('/tmp/ai-summary.txt','w') as f: f.write(summary)
+          PYEOF
+          chmod +x /tmp/send-progress.py /tmp/ai-summary.py
+
       - name: Notify Started
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" -H "Authorization: Bearer ${{ inputs.callback_secret }}" -H "Content-Type: application/json" -d "{\"type\":\"started\",\"message\":\"Aider (${{ inputs.model }}) analyzing...\"}" || true
@@ -128,47 +166,6 @@ jobs:
           CHANGES=$(git status --porcelain | wc -l)
           echo "changes_count=${CHANGES}" >> $GITHUB_OUTPUT
           [ "${CHANGES}" -gt 0 ] && git diff --stat
-
-      - name: Create helper scripts
-        run: |
-          cat > /tmp/send-progress.py << 'PYEOF'
-          import json, urllib.request, os
-          cb = os.environ['CB']
-          cs = os.environ['CS']
-          with open('/tmp/aider-stdout.log') as f:
-              lines = [l.strip() for l in f if l.strip() and len(l.strip()) > 5]
-          chunk = ''
-          for l in lines:
-              if len(chunk) + len(l) > 2500:
-                  data = json.dumps({'type':'progress','message':chunk}).encode()
-                  urllib.request.urlopen(urllib.request.Request(cb, data=data,
-                      headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}), timeout=5)
-                  chunk = l + '\n'
-              else:
-                  chunk += l + '\n'
-          if chunk.strip():
-              data = json.dumps({'type':'progress','message':chunk}).encode()
-              urllib.request.urlopen(urllib.request.Request(cb, data=data,
-                  headers={'Authorization':f'Bearer {cs}','Content-Type':'application/json'}), timeout=5)
-          PYEOF
-
-          cat > /tmp/ai-summary.py << 'PYEOF'
-          import json, urllib.request, os, sys
-          diff = os.environ.get('D','')
-          key = os.environ.get('K','')
-          model = os.environ.get('M','deepseek-chat')
-          if not diff or not key:
-              sys.exit(0)
-          prompt = f'Based on this git diff, write a 2-3 sentence summary in Chinese of what was changed: {diff}'
-          data = json.dumps({'model':model,'messages':[{'role':'user','content':prompt}],'max_tokens':200,'temperature':0.3}).encode()
-          req = urllib.request.Request('https://api.deepseek.com/v1/chat/completions', data=data,
-              headers={'Content-Type':'application/json','Authorization':f'Bearer {key}'})
-          resp = json.loads(urllib.request.urlopen(req, timeout=20).read())
-          summary = resp['choices'][0]['message']['content'][:500]
-          with open('/tmp/ai-summary.txt','w') as f: f.write(summary)
-          print(f'Summary: {summary}')
-          PYEOF
-          chmod +x /tmp/send-progress.py /tmp/ai-summary.py
 
       - name: AI Summary
         if: steps.changes.outputs.changes_count > 0
