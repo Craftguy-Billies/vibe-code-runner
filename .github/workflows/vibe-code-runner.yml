@@ -65,27 +65,72 @@ jobs:
         env:
           OPENAI_API_BASE: https://api.deepseek.com/v1
           OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          OPENAI_MAX_TOKENS: 65536
+          OPENAI_MAX_TOKENS: 384000
         run: |
           cd /tmp/target-repo
-          echo "Model: openai/${{ inputs.model }}  MaxTokens: 65536"
-          aider --yes-always --model "openai/${{ inputs.model }}" --message "${{ inputs.prompt }}" --no-suggest-shell-commands 2>&1 | tee /tmp/aider.log
+
+          # Set DeepSeek V4 context (1M input, 384K output)
+          cat > .aider.model.metadata.json << 'METAEOF'
+          {
+            "openai/deepseek-v4-flash": {
+              "max_tokens": 1000000,
+              "max_input_tokens": 1000000,
+              "max_output_tokens": 384000,
+              "mode": "chat"
+            },
+            "openai/deepseek-v4-pro": {
+              "max_tokens": 1000000,
+              "max_input_tokens": 1000000,
+              "max_output_tokens": 384000,
+              "mode": "chat"
+            },
+            "openai/deepseek-chat": {
+              "max_tokens": 1000000,
+              "max_input_tokens": 1000000,
+              "max_output_tokens": 384000,
+              "mode": "chat"
+            },
+            "openai/deepseek-reasoner": {
+              "max_tokens": 1000000,
+              "max_input_tokens": 1000000,
+              "max_output_tokens": 384000,
+              "mode": "chat"
+            }
+          }
+          METAEOF
+          echo "Model: openai/${{ inputs.model }} | Context: 1M in / 384K out"
+
+          aider --yes-always --model "openai/${{ inputs.model }}" \
+            --message "${{ inputs.prompt }}" --no-suggest-shell-commands \
+            --model-metadata-file .aider.model.metadata.json \
+            2>&1 | tee /tmp/aider.log
           AIDER_EXIT=${PIPESTATUS[0]}
           echo "Aider exit: ${AIDER_EXIT}"
 
-          # Send progress: last 25 lines of Aider output via curl
+          # Send filtered progress: only meaningful Aider lines
           CB="${{ inputs.callback_url }}"; CS="${{ inputs.callback_secret }}"
-          tail -25 /tmp/aider.log | grep -v '^$' | while IFS= read -r line; do
+          grep -vE '^(Downloading|Collecting|Installing|Successfully|Requirement|  ━|^$)' /tmp/aider.log | \
+          grep -vE '(pip install|setup.py|wheel)' | \
+          grep -E '(Creating|Created|Applied|Edited|Modified|Wrote|Commit|commit|Token|error|Error|Failed|scraping|repo-map|plan|ANSWER|summar)' | \
+          head -20 | while IFS= read -r line; do
             line=$(echo "$line" | tr -d '\n\r' | cut -c1-500)
-            [ ${#line} -lt 5 ] && continue
             curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
               -d "{\"type\":\"progress\",\"message\":\"$line\"}" > /dev/null 2>&1 || true
           done
 
-          # Send diff summary
-          DIFF=$(git diff --stat 2>/dev/null | head -5 | tr '\n' ' ' | cut -c1-500)
-          [ -n "$DIFF" ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
-            -d "{\"type\":\"progress\",\"message\":\"📊 $DIFF\"}" > /dev/null 2>&1 || true
+          # Send diff + changed files summary
+          echo "--- What Changed ---"
+          git diff --stat 2>/dev/null
+          FILES=$(git diff --name-only 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
+          ADDS=$(git diff --shortstat 2>/dev/null | tr '\n' ' ')
+          if [ -n "$FILES" ]; then
+            curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
+              -d "{\"type\":\"progress\",\"message\":\"📁 Changed: $FILES\"}" > /dev/null 2>&1 || true
+          fi
+          if [ -n "$ADDS" ]; then
+            curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
+              -d "{\"type\":\"progress\",\"message\":\"📊 $ADDS\"}" > /dev/null 2>&1 || true
+          fi
 
           [ ${AIDER_EXIT} -ne 0 ] && exit ${AIDER_EXIT}
           if ! grep -qE '(Applied|Created|Modified|Wrote|Edited)' /tmp/aider.log; then
@@ -145,19 +190,17 @@ jobs:
       - name: Notify Done
         if: success()
         run: |
-          # Build summary from Aider chat history + output
-          SUMMARY=""
-          if [ -f /tmp/target-repo/.aider.chat.history.md ]; then
-            SUMMARY=$(tail -30 /tmp/target-repo/.aider.chat.history.md | tr '\n' ' ' | cut -c1-1000)
-          fi
-          if [ -z "$SUMMARY" ]; then
-            SUMMARY=$(tail -15 /tmp/aider.log | grep -v '^$' | tr '\n' ' ' | cut -c1-1000)
-          fi
-          echo "Sending completion to ${{ inputs.callback_url }}"
-          curl -v -X POST "${{ inputs.callback_url }}" \
+          cd /tmp/target-repo
+          # Build clear summary: what files changed + commit message
+          CHANGED=$(git diff --name-only HEAD~1 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
+          COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null | head -1)
+          SHORTSTAT=$(git diff --shortstat HEAD~1 2>/dev/null)
+          SUMMARY="Changed: ${CHANGED:-none} | ${SHORTSTAT:-no stats} | ${COMMIT_MSG:-no commit}"
+          echo "Completion summary: $SUMMARY"
+          curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_secret }}" \
             -H "Content-Type: application/json" \
-            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }},\"summary\":\"${SUMMARY}\"}" 2>&1 || true
+            -d "{\"type\":\"completed\",\"pr_url\":\"${{ steps.pr.outputs.pr_url }}\",\"preview_url\":\"${{ steps.preview.outputs.preview_url }}\",\"file_count\":${{ steps.changes.outputs.changes_count }},\"summary\":\"${SUMMARY}\"}" || true
 
       - name: Notify Fail
         if: failure()
