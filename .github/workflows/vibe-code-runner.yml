@@ -111,9 +111,11 @@ jobs:
           # Send progress to Worker with proper JSON escaping
           CB="${{ inputs.callback_url }}"
           CS="${{ inputs.callback_secret }}"
-          cat /tmp/aider-stdout.log | grep -vE '(Downloading|Collecting|Installing|Successfully|pip|wheel|metadata|━━|╭|╰|^$|^\s*$|●|○|◌|◍|◎|◉|◊|◌)' | head -30 | while IFS= read -r line; do
-            ESCAPED=$(echo "$line" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[:500])" 2>/dev/null || echo '""')
-            [ ${#ESCAPED} -gt 5 ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":$ESCAPED}" > /dev/null 2>&1 || true
+          cat /tmp/aider-stdout.log | grep -vE '(Downloading|Collecting|Installing|Successfully|pip install|wheel|metadata|━━|╭|╰|^$|●|○|◌)' | grep -vE '^\s*$' | sed 's/\x1b\[[0-9;]*m//g' | while IFS= read -r line; do
+            stripped=$(echo "$line" | xargs)
+            [ ${#stripped} -lt 10 ] && continue
+            ESCAPED=$(echo "$stripped" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read())[:500])" 2>/dev/null || echo '""')
+            [ ${#ESCAPED} -gt 10 ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":$ESCAPED}" > /dev/null 2>&1 || true
           done
 
           # Send diff summary
