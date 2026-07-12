@@ -8,6 +8,7 @@ on:
       prompt: {description: 'Coding task', required: true, type: string}
       model: {description: 'DeepSeek model', required: false, type: string, default: 'deepseek-v4-flash'}
       clear_history: {description: 'Clear chat history', required: false, type: string, default: 'false'}
+      mode: {description: 'pr or wip', required: false, type: string, default: 'pr'}
       callback_url: {description: 'Worker callback URL', required: true, type: string}
       callback_secret: {description: 'Worker secret', required: true, type: string}
 
@@ -19,8 +20,25 @@ jobs:
       - name: Clone target repo
         env: {GH_PAT: '${{ secrets.GH_PAT }}'}
         run: |
-          git clone --branch "${{ inputs.branch }}" --single-branch \
-            "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
+          if [ "${{ inputs.mode }}" = "wip" ]; then
+            WIP_BRANCH="vibe-code/wip-${{ inputs.job_id }}"
+            git clone --branch "${{ inputs.branch }}" --single-branch \
+              "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo || \
+            git clone "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
+            cd /tmp/target-repo
+            # Try to checkout existing WIP branch (continues previous work)
+            git fetch origin "vibe-code/wip-*" 2>/dev/null || true
+            LATEST_WIP=$(git branch -r | grep 'vibe-code/wip-' | sort -t- -k3 -n | tail -1 | xargs)
+            if [ -n "$LATEST_WIP" ]; then
+              echo "Found previous WIP branch: $LATEST_WIP"
+              git checkout -b "$WIP_BRANCH" "$LATEST_WIP" 2>/dev/null || git checkout -b "$WIP_BRANCH"
+            else
+              git checkout -b "$WIP_BRANCH"
+            fi
+          else
+            git clone --branch "${{ inputs.branch }}" --single-branch \
+              "https://x-access-token:${GH_PAT}@github.com/${{ inputs.repo }}.git" /tmp/target-repo
+          fi
           ls /tmp/target-repo
 
       - uses: actions/setup-python@v5
@@ -108,21 +126,34 @@ jobs:
           echo "Aider exit: ${AIDER_EXIT}"
 
           # Generate AI summary of changes (DeepSeek direct call)
-          echo "=== GENERATING SUMMARY ==="
+          echo "=== GENERATING AI SUMMARY ==="
           DIFF_CONTENT=$(git diff --staged 2>/dev/null | head -100 || git diff 2>/dev/null | head -100)
-          COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null | head -1)
           if [ -n "$DIFF_CONTENT" ]; then
-            SUMMARY_PROMPT="Based on this git diff, write a 2-3 sentence summary of what was changed. Be specific about files, functions, and features. Diff: $DIFF_CONTENT"
+            # Write prompt to file to avoid bash escaping issues
+            python3 -c "
+import json, os
+diff = os.environ.get('DIFF','')
+prompt = f'Based on this git diff, write a 2-3 sentence summary of what was changed. Be specific about files, functions, and features. Diff: {diff}'
+data = json.dumps({'model':'${{ inputs.model }}','messages':[{'role':'user','content':prompt}],'max_tokens':200,'temperature':0.3})
+with open('/tmp/summary-request.json','w') as f: f.write(data)
+" DIFF="$DIFF_CONTENT"
             AI_SUMMARY=$(curl -s https://api.deepseek.com/v1/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer ${{ secrets.DEEPSEEK_API_KEY }}" \
-              -d "{\"model\":\"${{ inputs.model }}\",\"messages\":[{\"role\":\"user\",\"content\":\"$SUMMARY_PROMPT\"}],\"max_tokens\":200,\"temperature\":0.3}" \
+              --data-binary @/tmp/summary-request.json \
               | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'][:500])" 2>/dev/null)
             echo "$AI_SUMMARY" > /tmp/ai-summary.txt
-            echo "Summary: $AI_SUMMARY"
+            echo "AI Summary: $AI_SUMMARY"
             # Send summary as progress
-            curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
-              -d "{\"type\":\"progress\",\"message\":\"🤖 AI Summary: $AI_SUMMARY\"}" > /dev/null 2>&1 || true
+            CB="${{ inputs.callback_url }}"; CS="${{ inputs.callback_secret }}"
+            python3 -c "
+import json, urllib.request, os
+summary = open('/tmp/ai-summary.txt').read().strip()
+if summary:
+    data = json.dumps({'type':'progress','message':f'🤖 {summary}'}).encode()
+    urllib.request.urlopen(urllib.request.Request(os.environ['CB'], data=data,
+        headers={'Authorization':f'Bearer {os.environ[\"CS\"]}','Content-Type':'application/json'}), timeout=5)
+" CB="$CB" CS="$CS" 2>/dev/null || true
           fi
 
           # Send filtered progress: only meaningful Aider lines
