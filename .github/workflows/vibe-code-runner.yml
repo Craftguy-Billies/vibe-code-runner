@@ -89,26 +89,6 @@ jobs:
 
       - name: Create helper scripts
         run: |
-          cat > /tmp/send-progress.py << 'PYEOF'
-          import json, urllib.request, os
-          job_id = os.environ['JOB_ID']
-          url = f'https://vibe-code-bot.kwantszlong1555.workers.dev/api/progress/{job_id}'
-          with open('/tmp/aider-stdout.log') as f:
-              lines = [l.strip() for l in f if l.strip() and len(l.strip()) > 5]
-          chunk = ''
-          for l in lines:
-              if len(chunk) + len(l) > 2500:
-                  data = json.dumps({'message':chunk}).encode()
-                  urllib.request.urlopen(urllib.request.Request(url, data=data,
-                      headers={'Content-Type':'application/json'}), timeout=5)
-                  chunk = l + '\n'
-              else:
-                  chunk += l + '\n'
-          if chunk.strip():
-              data = json.dumps({'message':chunk}).encode()
-              urllib.request.urlopen(urllib.request.Request(url, data=data,
-                  headers={'Content-Type':'application/json'}), timeout=5)
-          PYEOF
           cat > /tmp/ai-summary.py << 'PYEOF'
           import json, urllib.request, os, sys
           diff = os.environ.get('D','')
@@ -123,7 +103,7 @@ jobs:
           summary = resp['choices'][0]['message']['content'][:500]
           with open('/tmp/ai-summary.txt','w') as f: f.write(summary)
           PYEOF
-          chmod +x /tmp/send-progress.py /tmp/ai-summary.py
+          chmod +x /tmp/ai-summary.py
 
       - name: Notify Started
         run: |
@@ -149,30 +129,16 @@ jobs:
           # Send progress to Worker with proper JSON escaping
           CB="${{ inputs.callback_url }}"
           CS="${{ inputs.callback_secret }}"
-          # Send Aider output as progress (using curl - works around Cloudflare WAF)
+          # Send Aider output as progress using curl (same as started/done - works)
           CB="${{ inputs.callback_url }}"
           CS="${{ inputs.callback_secret }}"
-          CHUNK=""
-          while IFS= read -r line; do
-            line=$(echo "$line" | tr -d '\r' | cut -c1-500)
+          cat /tmp/aider-stdout.log | grep -vE '(Downloading|Collecting|Installing|━━|╭|╰|^\s*$)' | while IFS= read -r line; do
+            line=$(echo "$line" | cut -c1-400)
             [ ${#line} -lt 5 ] && continue
-            if [ ${#CHUNK} -gt 2000 ]; then
-              curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
-                -d "{\"type\":\"progress\",\"message\":\"$CHUNK\"}" > /dev/null 2>&1 || true
-              CHUNK="$line"
-            else
-              CHUNK="${CHUNK}${line}\n"
-            fi
-          done < <(grep -vE '(Downloading|Collecting|Installing|━━|╭|╰)' /tmp/aider-stdout.log | grep -vE '^\s*$')
-          [ -n "$CHUNK" ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
-            -d "{\"type\":\"progress\",\"message\":\"$CHUNK\"}" > /dev/null 2>&1 || true
-          echo "Progress sent"
-
-          # Send diff summary
-          git diff --stat 2>/dev/null | head -5 | while IFS= read -r line; do
-            ESCAPED=$(echo "$line" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[:500])" 2>/dev/null || echo '""')
-            [ ${#ESCAPED} -gt 5 ] && curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" -d "{\"type\":\"progress\",\"message\":$ESCAPED}" > /dev/null 2>&1 || true
+            curl -s -X POST "$CB" -H "Authorization: Bearer $CS" -H "Content-Type: application/json" \
+              -d "{\"type\":\"progress\",\"message\":\"$line\"}" > /dev/null 2>&1 || true
           done
+          echo "Progress sent"
 
       - name: Check changes
         id: changes
